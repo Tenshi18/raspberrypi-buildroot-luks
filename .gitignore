@@ -1,0 +1,70 @@
+# Generated keyfiles and encrypted images
+keys/*.lek
+keys/
+encrypted/*.img
+encrypted/
+*.img
+!buildroot-external/board/raspberrypi5/*.img
+
+# Build output directories
+output/
+build/
+dl/
+.buildroot-ccache/
+
+# Temporary files
+tmp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# Manifest files (may contain sensitive info)
+manifest.csv
+
+# Environment and configuration
+.env
+.env.local
+*.conf.local
+
+# Editor and IDE
+.vscode/
+.idea/
+*.sublime-*
+.project
+.cproject
+.settings/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# Logs
+*.log
+log/
+logs/
+
+# Buildroot specific
+/host/
+/staging/
+/target/
+/images/
+/.config.old
+/.auto.deps
+
