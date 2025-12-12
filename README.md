@@ -171,8 +171,8 @@ flowchart TD
         K --> L[Save keyfile<br/>to keys/]
     end
     
-    style K fill:#c8e6c9
-    style L fill:#fff9c4
+    style K fill:#c8e6c9,color:#000
+    style L fill:#fff9c4,color:#000
 ```
 
 ### Опции Config.in
@@ -198,9 +198,9 @@ flowchart TD
     E --> F[Update boot configuration<br/>cmdline.txt, crypttab, fstab]
     F --> G[Output .img<br/>encrypted]
     
-    style A fill:#e1f5ff
-    style G fill:#c8e6c9
-    style D fill:#fff9c4
+    style A fill:#e1f5ff,color:#000
+    style G fill:#c8e6c9,color:#000
+    style D fill:#fff9c4,color:#000
 ```
 
 ### Процесс загрузки
@@ -230,10 +230,10 @@ flowchart TD
     Mount --> SwitchRoot[switch_root to /newroot]
     SwitchRoot --> NormalBoot
     
-    style Start fill:#e1f5ff
-    style NormalBoot fill:#c8e6c9
-    style Rescue fill:#ffcdd2
-    style Unlock fill:#fff9c4
+    style Start fill:#e1f5ff,color:#000
+    style Unlock fill:#fff9c4,color:#000
+    style NormalBoot fill:#c8e6c9,color:#000
+    style Rescue fill:#ffcdd2,color:#000
 ```
 
 ## Сравнение с sdm
