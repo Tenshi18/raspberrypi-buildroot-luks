@@ -1,4 +1,4 @@
-# Buildroot LUKS Pre-Burn Encryption for Raspberry Pi 5
+# LUKS Pre-Burn Encryption for Raspberry Pi 5 Buildroot images
 
 Автоматизированное создание зашифрованных .img образов с уникальными LUKS keyfile **до** записи на SD-карту.
 
