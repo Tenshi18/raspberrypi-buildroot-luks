@@ -28,8 +28,8 @@ on:
         type: string
 
 env:
-  BUILDROOT_VERSION: ${{ inputs.buildroot_version || '2025.11' }}
-  TARGET_BOARD: ${{ inputs.board || 'raspberrypi5' }}
+  BUILDROOT_VERSION: ${{ github.event.inputs.buildroot_version || '2025.11' }}
+  TARGET_BOARD: ${{ github.event.inputs.board || 'raspberrypi5' }}
   BR2_DL_DIR: ${{ github.workspace }}/dl-cache
   BR2_CCACHE_DIR: ${{ github.workspace }}/ccache-cache
 
@@ -157,13 +157,13 @@ jobs:
           make $DEFCONFIG
           
           # Configure encryption based on input
-          if [ "${{ inputs.encrypt }}" = "false" ]; then
+          if [ "${{ github.event.inputs.encrypt }}" = "false" ]; then
             echo "BR2_LUKS_ENCRYPT=n" >> .config
           else
             echo "BR2_LUKS_ENCRYPT=y" >> .config
           fi
           
-          if [ "${{ inputs.keep_unencrypted }}" = "true" ]; then
+          if [ "${{ github.event.inputs.keep_unencrypted }}" = "true" ]; then
             echo "BR2_LUKS_KEEP_UNENCRYPTED=y" >> .config
           fi
           
@@ -184,7 +184,7 @@ jobs:
           make -j$(nproc)
 
       - name: Prepare keyfile from secret (if provided)
-        if: ${{ inputs.encrypt != false && secrets.LUKS_KEYFILE_BASE64 != '' }}
+        if: ${{ github.event.inputs.encrypt != false && secrets.LUKS_KEYFILE_BASE64 != '' }}
         env:
           LUKS_KEYFILE_BASE64: ${{ secrets.LUKS_KEYFILE_BASE64 }}
         run: |
@@ -200,7 +200,7 @@ jobs:
           echo "Using keyfile from GitHub Secret"
 
       - name: Encrypt image (if enabled)
-        if: ${{ inputs.encrypt != false }}
+        if: ${{ github.event.inputs.encrypt != false }}
         env:
           LUKS_KEYFILE_BASE64: ${{ secrets.LUKS_KEYFILE_BASE64 }}
           LUKS_PASSPHRASE: ${{ secrets.LUKS_PASSPHRASE }}
@@ -337,7 +337,7 @@ jobs:
           Branch: ${{ github.ref_name }}
           Date: $(date -Iseconds)
           Buildroot: ${BUILDROOT_VERSION}
-          Encrypted: ${{ inputs.encrypt }}
+          Encrypted: ${{ github.event.inputs.encrypt }}
           
           Files:
           $(ls -la artifacts/ 2>/dev/null || echo "No artifacts")
