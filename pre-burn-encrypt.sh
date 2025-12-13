@@ -24,7 +24,7 @@ NC='\033[0m' # No Color
 
 function errexit() {
     echo -e "${RED}Error: $1${NC}" >&2
-    cleanup
+    # Don't call cleanup here - let trap EXIT handle it
     exit 1
 }
 
@@ -37,21 +37,34 @@ function warn() {
 }
 
 function cleanup() {
-    info "Cleaning up..."
+    # Prevent multiple cleanup calls
+    [ "${CLEANUP_DONE:-0}" -eq 1 ] && return 0
+    CLEANUP_DONE=1
+    
+    # Temporarily disable exit on error for cleanup
+    set +e
+    
+    # Safe info output (in case variables aren't initialized)
+    echo "> Cleaning up..." >&2
     
     # Unmount if mounted
-    [ -d "$MOUNT_ENCRYPTED" ] && mountpoint -q "$MOUNT_ENCRYPTED" && umount "$MOUNT_ENCRYPTED" 2>/dev/null || true
-    [ -d "$MOUNT_BOOT" ] && mountpoint -q "$MOUNT_BOOT" && umount "$MOUNT_BOOT" 2>/dev/null || true
-    [ -d "$MOUNT_ORIG" ] && mountpoint -q "$MOUNT_ORIG" && umount "$MOUNT_ORIG" 2>/dev/null || true
+    [ -n "$MOUNT_ENCRYPTED" ] && [ -d "$MOUNT_ENCRYPTED" ] && mountpoint -q "$MOUNT_ENCRYPTED" && umount "$MOUNT_ENCRYPTED" 2>/dev/null || true
+    [ -n "$MOUNT_BOOT" ] && [ -d "$MOUNT_BOOT" ] && mountpoint -q "$MOUNT_BOOT" && umount "$MOUNT_BOOT" 2>/dev/null || true
+    [ -n "$MOUNT_ORIG" ] && [ -d "$MOUNT_ORIG" ] && mountpoint -q "$MOUNT_ORIG" && umount "$MOUNT_ORIG" 2>/dev/null || true
     
     # Close LUKS
-    [ -n "$CRYPT_NAME" ] && cryptsetup status "$CRYPT_NAME" &>/dev/null && cryptsetup luksClose "$CRYPT_NAME" 2>/dev/null || true
+    if [ -n "$CRYPT_NAME" ]; then
+        cryptsetup status "$CRYPT_NAME" &>/dev/null && cryptsetup luksClose "$CRYPT_NAME" 2>/dev/null || true
+    fi
     
     # Detach loop devices
     [ -n "$LOOP_DEV" ] && losetup -d "$LOOP_DEV" 2>/dev/null || true
     
     # Remove temp directories
-    [ -d "$WORK_DIR" ] && rm -rf "$WORK_DIR"
+    [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ] && rm -rf "$WORK_DIR" 2>/dev/null || true
+    
+    # Re-enable exit on error
+    set -e
 }
 
 function printhelp() {
@@ -95,20 +108,24 @@ EOF
 function check_requirements() {
     local missing=()
     
-    for cmd in cryptsetup parted losetup mkfs.ext4 resize2fs dd uuid; do
+    for cmd in cryptsetup parted losetup mkfs.ext4 resize2fs dd uuidgen; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     
-    [ ${#missing[@]} -gt 0 ] && errexit "Missing required commands: ${missing[*]}\nInstall with: apt install cryptsetup parted uuid e2fsprogs"
+    if [ ${#missing[@]} -gt 0 ]; then
+        errexit "Missing required commands: ${missing[*]}\nInstall with: apt install cryptsetup parted uuid-runtime e2fsprogs"
+    fi
     
-    [ "$EUID" -ne 0 ] && errexit "This script must be run as root"
+    if [ "$EUID" -ne 0 ]; then
+        errexit "This script must be run as root"
+    fi
 }
 
 function generate_keyfile() {
     local keydir="$1"
     local keyuuid
     
-    keyuuid=$(uuid -v4)
+    keyuuid=$(uuidgen)
     local keypath="${keydir}/${keyuuid}.lek"
     
     mkdir -p "$keydir"
@@ -465,6 +482,7 @@ MOUNT_ORIG=""
 MOUNT_BOOT=""
 MOUNT_ENCRYPTED=""
 CRYPT_NAME=""
+CLEANUP_DONE=0
 
 # Parse arguments
 while [ $# -gt 0 ]; do
