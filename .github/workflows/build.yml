@@ -1,14 +1,6 @@
 name: Build Raspberry Pi LUKS Image
 
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - 'buildroot-external/**'
-      - 'configs/**'
-      - '.github/workflows/build.yml'
-  pull_request:
-    branches: [main, master]
   workflow_dispatch:
     inputs:
       board:
