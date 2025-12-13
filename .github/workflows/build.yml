@@ -39,13 +39,17 @@ jobs:
     timeout-minutes: 300  # 5 часов максимум
     outputs:
       target_board: ${{ env.TARGET_BOARD }}
+    env:
+      HAS_BOARD_OVERLAY: ${{ secrets.BOARD_OVERLAY_TAR_BASE64 != '' }}
+      HAS_LUKS_KEYFILE: ${{ secrets.LUKS_KEYFILE_BASE64 != '' }}
+      HAS_GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDENTIALS != '' }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Extract secret board overlay
-        if: ${{ secrets.BOARD_OVERLAY_TAR_BASE64 != '' }}
+        if: ${{ env.HAS_BOARD_OVERLAY == 'true' }}
         env:
           BOARD_OVERLAY_TAR_BASE64: ${{ secrets.BOARD_OVERLAY_TAR_BASE64 }}
         run: |
@@ -184,7 +188,7 @@ jobs:
           make -j$(nproc)
 
       - name: Prepare keyfile from secret (if provided)
-        if: ${{ github.event.inputs.encrypt != 'false' && secrets.LUKS_KEYFILE_BASE64 != '' }}
+        if: ${{ github.event.inputs.encrypt != 'false' && env.HAS_LUKS_KEYFILE == 'true' }}
         env:
           LUKS_KEYFILE_BASE64: ${{ secrets.LUKS_KEYFILE_BASE64 }}
         run: |
@@ -286,7 +290,7 @@ jobs:
           sha256sum *.img.xz > SHA256SUMS.txt 2>/dev/null || true
 
       - name: Upload to Google Drive
-        if: ${{ secrets.GDRIVE_CREDENTIALS != '' }}
+        if: ${{ env.HAS_GDRIVE_CREDS == 'true' }}
         env:
           GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
           GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
@@ -350,7 +354,7 @@ jobs:
           rm -f /tmp/gdrive-sa.json
 
       - name: Upload artifacts (fallback to GitHub)
-        if: ${{ secrets.GDRIVE_CREDENTIALS == '' }}
+        if: ${{ env.HAS_GDRIVE_CREDS == 'false' }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TARGET_BOARD }}-luks-images
@@ -359,7 +363,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload keyfiles (fallback to GitHub)
-        if: ${{ secrets.GDRIVE_CREDENTIALS == '' && github.event.inputs.encrypt != 'false' && env.SKIP_KEYFILE_UPLOAD != 'true' }}
+        if: ${{ env.HAS_GDRIVE_CREDS == 'false' && github.event.inputs.encrypt != 'false' && env.SKIP_KEYFILE_UPLOAD != 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.TARGET_BOARD }}-luks-keys
