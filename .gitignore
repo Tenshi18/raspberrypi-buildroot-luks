@@ -1,10 +1,8 @@
 # Generated keyfiles and encrypted images
-keys/*.lek
 keys/
-encrypted/*.img
+*.lek
 encrypted/
 *.img
-!buildroot-external/board/raspberrypi5/*.img
 
 # Build output directories
 output/

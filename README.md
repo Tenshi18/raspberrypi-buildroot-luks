@@ -1,6 +1,11 @@
-# LUKS Pre-Burn Encryption for Raspberry Pi 5 Buildroot images
+# LUKS Pre-Burn Encryption for Raspberry Pi Buildroot images
 
 Автоматизированное создание зашифрованных .img образов с уникальными LUKS keyfile **до** записи на SD-карту.
+
+## Поддерживаемые устройства
+
+- **Raspberry Pi 5** (`raspberrypi5_luks_defconfig`)
+- **Raspberry Pi Zero 2W 64-bit** (`raspberrypizero2w_64_luks_defconfig`)
 
 ## Особенности
 
@@ -8,7 +13,7 @@
 - **Уникальные ключи** — каждый образ получает свой UUID-based keyfile
 - **USB-ключ** — разблокировка rootfs через USB-накопитель с keyfile
 - **Пакетная обработка** — создание множества образов за один запуск
-- **Buildroot ready** — полная интеграция с Buildroot для Raspberry Pi 5
+- **Buildroot ready** — полная интеграция с Buildroot для RPi5 и RPi Zero 2W
 
 ## Быстрый старт
 
@@ -63,7 +68,8 @@ sudo dd if=encrypted/device_001.img of=/dev/sdY bs=4M status=progress
     ├── pre-burn-encrypt.sh          # Копия скрипта для post-image
     │
     ├── configs/
-    │   └── raspberrypi5_luks_defconfig  # Готовый defconfig
+    │   ├── raspberrypi5_luks_defconfig         # RPi5 defconfig
+    │   └── raspberrypizero2w_64_luks_defconfig # RPi Zero 2W defconfig
     │
     ├── scripts/
     │   ├── post-build.sh            # Pre-image подготовка rootfs
@@ -96,7 +102,11 @@ export BR2_EXTERNAL=/path/to/raspberrypi5-buildroot-luks/buildroot-external
 **2. Загрузите defconfig:**
 
 ```bash
+# Для Raspberry Pi 5:
 make raspberrypi5_luks_defconfig
+
+# Или для Raspberry Pi Zero 2W:
+make raspberrypizero2w_64_luks_defconfig
 ```
 
 **3. (Опционально) Настройте параметры шифрования:**
@@ -307,6 +317,135 @@ aes-xts-plain64:    ~88 MiB/s шифрование, ~108 MiB/s дешифров�
 ```
 
 Используйте `--crypto xchacha` для Pi4 и более ранних моделей.
+
+## CI/CD с GitHub Actions
+
+Автоматическая сборка образов в облаке:
+
+```bash
+# Raspberry Pi 5
+gh workflow run build.yml -f board=raspberrypi5 -f encrypt=true
+
+# Raspberry Pi Zero 2W
+gh workflow run build.yml -f board=raspberrypizero2w-64 -f encrypt=true
+```
+
+### Характеристики бесплатных runners
+
+| Параметр | Значение |
+|----------|----------|
+| Runner | `ubuntu-24.04` |
+| vCPU | 4 (x86_64) |
+| RAM | 16 GB |
+| Диск | ~14 GB SSD |
+| Timeout | 6 часов |
+
+### Время сборки
+
+| Этап | Без кэша | С кэшем |
+|------|----------|---------|
+| Полная сборка | 1.5-3 ч | 20-40 мин |
+| Шифрование | 2-5 мин | 2-5 мин |
+
+### Хранение результатов
+
+| Если настроен | Где хранится |
+|---------------|--------------|
+| `GDRIVE_CREDENTIALS` | Google Drive: `builds/<date>-<run_id>/` |
+| Ничего | GitHub Artifacts (fallback) |
+
+**Google Drive структура:**
+```
+builds/2025-12-13-12345678/
+├── images/sdcard-encrypted.img.xz
+├── keys/<uuid>.lek (если автогенерация)
+└── build-info.txt
+```
+
+**GitHub Artifacts (fallback):**
+- `rpi5-luks-images` — образы (30 дней)
+- `rpi5-luks-keys` — keyfiles (7 дней, только при автогенерации)
+
+### GitHub Secrets
+
+| Secret | Описание |
+|--------|----------|
+| `LUKS_KEYFILE_BASE64` | Keyfile в base64 (опционально) |
+| `LUKS_PASSPHRASE` | Пароль для шифрования (опционально) |
+| `GDRIVE_CREDENTIALS` | Google Service Account JSON |
+| `GDRIVE_FOLDER_ID` | ID папки в Google Drive |
+| `BOARD_OVERLAY_TAR_BASE64` | Секретный board overlay (tar.gz в base64) |
+
+**Приоритет ключей:** Secret keyfile → Secret passphrase → Автогенерация
+
+**Приоритет хранения:** Google Drive → GitHub Artifacts
+
+### Настройка Google Drive
+
+1. Создайте Service Account в [Google Cloud Console](https://console.cloud.google.com/)
+2. Включите Google Drive API
+3. Скачайте JSON-ключ
+4. Поделитесь папкой в Drive для email сервис-аккаунта
+5. Добавьте secrets:
+
+```bash
+# JSON credentials
+cat service-account.json | gh secret set GDRIVE_CREDENTIALS
+
+# ID папки (из URL: drive.google.com/drive/folders/<ID>)
+gh secret set GDRIVE_FOLDER_ID
+```
+
+**Структура в Google Drive:**
+```
+builds/
+└── 2025-12-13-12345678/
+    ├── images/
+    │   ├── sdcard-encrypted.img.xz
+    │   └── SHA256SUMS.txt
+    ├── keys/
+    │   └── <uuid>.lek
+    ├── encryption-info.txt
+    └── build-info.txt
+```
+
+### Секретный Board Overlay
+
+Для хранения конфиденциальных файлов (данные WiFi-сети, скрипты, конфиги):
+
+```bash
+# 1. Создайте структуру:
+mkdir -p board-secret/rootfs-overlay/etc/NetworkManager/system-connections
+mkdir -p board-secret/rootfs-overlay/etc/init.d
+mkdir -p board-secret/rootfs-overlay/root
+
+# 2. Добавьте секретные файлы:
+#    - cmdline.txt
+#    - file_permissions.txt  
+#    - rootfs-overlay/...
+
+# 3. Упакуйте и добавьте в secrets:
+tar -czf - -C board-secret . | base64 | gh secret set BOARD_OVERLAY_TAR_BASE64
+
+# 4. Запустите сборку:
+gh workflow run build.yml -f board=raspberrypi5
+```
+
+**Структура секретного архива:**
+```
+board-secret/
+├── cmdline.txt                        # Параметры ядра Linux
+├── file_permissions.txt               # Права доступа для файлов
+└── rootfs-overlay/
+    ├── etc/
+    │   ├── NetworkManager/
+    │   │   └── system-connections/
+    │   │       └── wifi.nmconnection  # Файл WiFi-соединения для NetworkManager
+    │   └── init.d/
+    │       └── custom-service         # Служба автозапуска
+    └── root/
+        └── app.py                     # Запускаемое программное обеспечение
+```
 
 ## Лицензия
 
