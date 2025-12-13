@@ -144,7 +144,12 @@ jobs:
           if [ "${{ env.TARGET_BOARD }}" = "raspberrypizero2w-64" ]; then
             DEFCONFIG="raspberrypizero2w_64_luks_defconfig"
           else
-            DEFCONFIG="raspberrypi5_luks_defconfig"
+            # Prefer custom defconfig if available
+            if [ -f "configs/raspberrypi5_custom_luks_defconfig" ]; then
+              DEFCONFIG="raspberrypi5_custom_luks_defconfig"
+            else
+              DEFCONFIG="raspberrypi5_luks_defconfig"
+            fi
           fi
           echo "Using defconfig: $DEFCONFIG"
           
