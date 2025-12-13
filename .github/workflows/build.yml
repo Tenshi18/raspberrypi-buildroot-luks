@@ -45,6 +45,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 300  # 5 часов максимум
+    outputs:
+      target_board: ${{ env.TARGET_BOARD }}
 
     steps:
       - name: Checkout repository
@@ -380,7 +382,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: rpi5-luks-images
+          name: ${{ needs.build.outputs.target_board }}-luks-images
           path: release/
 
       - name: Create Release
@@ -391,7 +393,7 @@ jobs:
             release/SHA256SUMS.txt
             release/encryption-info.txt
           body: |
-            ## Raspberry Pi 5 LUKS Encrypted Image
+            ## Raspberry Pi LUKS Encrypted Image (${{ needs.build.outputs.target_board }})
             
             ### Files
             - `sdcard-encrypted.img.xz` - Encrypted SD card image
@@ -407,4 +409,3 @@ jobs:
             **Important:** Download keyfiles from workflow artifacts (expires in 7 days)
           draft: false
           prerelease: false
-
