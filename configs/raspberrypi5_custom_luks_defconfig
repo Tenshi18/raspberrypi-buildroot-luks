@@ -16,6 +16,9 @@ BR2_TOOLCHAIN_BUILDROOT_CXX=y
 
 # Kernel Headers - Use headers from the kernel being built
 BR2_KERNEL_HEADERS_AS_KERNEL=y
+# Minimum kernel headers version (required for compatibility check)
+BR2_TOOLCHAIN_HEADERS_AT_LEAST_6_12=y
+BR2_TOOLCHAIN_HEADERS_AT_LEAST="6.12"
 
 # System Configuration
 BR2_TARGET_GENERIC_HOSTNAME="rpi5-custom"
