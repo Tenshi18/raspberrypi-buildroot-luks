@@ -24,7 +24,7 @@ NC='\033[0m' # No Color
 
 function errexit() {
     echo -e "${RED}Error: $1${NC}" >&2
-    cleanup
+    # Don't call cleanup here - let trap EXIT handle it
     exit 1
 }
 
@@ -37,21 +37,34 @@ function warn() {
 }
 
 function cleanup() {
-    info "Cleaning up..."
+    # Prevent multiple cleanup calls
+    [ "${CLEANUP_DONE:-0}" -eq 1 ] && return 0
+    CLEANUP_DONE=1
+    
+    # Temporarily disable exit on error for cleanup
+    set +e
+    
+    # Safe info output (in case variables aren't initialized)
+    echo "> Cleaning up..." >&2
     
     # Unmount if mounted
-    [ -d "$MOUNT_ENCRYPTED" ] && mountpoint -q "$MOUNT_ENCRYPTED" && umount "$MOUNT_ENCRYPTED" 2>/dev/null || true
-    [ -d "$MOUNT_BOOT" ] && mountpoint -q "$MOUNT_BOOT" && umount "$MOUNT_BOOT" 2>/dev/null || true
-    [ -d "$MOUNT_ORIG" ] && mountpoint -q "$MOUNT_ORIG" && umount "$MOUNT_ORIG" 2>/dev/null || true
+    [ -n "$MOUNT_ENCRYPTED" ] && [ -d "$MOUNT_ENCRYPTED" ] && mountpoint -q "$MOUNT_ENCRYPTED" && umount "$MOUNT_ENCRYPTED" 2>/dev/null || true
+    [ -n "$MOUNT_BOOT" ] && [ -d "$MOUNT_BOOT" ] && mountpoint -q "$MOUNT_BOOT" && umount "$MOUNT_BOOT" 2>/dev/null || true
+    [ -n "$MOUNT_ORIG" ] && [ -d "$MOUNT_ORIG" ] && mountpoint -q "$MOUNT_ORIG" && umount "$MOUNT_ORIG" 2>/dev/null || true
     
     # Close LUKS
-    [ -n "$CRYPT_NAME" ] && cryptsetup status "$CRYPT_NAME" &>/dev/null && cryptsetup luksClose "$CRYPT_NAME" 2>/dev/null || true
+    if [ -n "$CRYPT_NAME" ]; then
+        cryptsetup status "$CRYPT_NAME" &>/dev/null && cryptsetup luksClose "$CRYPT_NAME" 2>/dev/null || true
+    fi
     
     # Detach loop devices
     [ -n "$LOOP_DEV" ] && losetup -d "$LOOP_DEV" 2>/dev/null || true
     
     # Remove temp directories
-    [ -d "$WORK_DIR" ] && rm -rf "$WORK_DIR"
+    [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ] && rm -rf "$WORK_DIR" 2>/dev/null || true
+    
+    # Re-enable exit on error
+    set -e
 }
 
 function printhelp() {
@@ -92,23 +105,82 @@ EOF
     exit 0
 }
 
+function generate_uuid() {
+    # Try different UUID generation methods for different distros
+    local uuid=""
+    
+    # Try uuidgen (Linux, util-linux)
+    if command -v uuidgen &>/dev/null; then
+        uuid=$(uuidgen 2>/dev/null)
+        [ -n "$uuid" ] && echo "$uuid" && return 0
+    fi
+    
+    # Try uuid -v4 (BSD, some Linux distros)
+    if command -v uuid &>/dev/null; then
+        uuid=$(uuid -v4 2>/dev/null)
+        [ -n "$uuid" ] && echo "$uuid" && return 0
+    fi
+    
+    # Try uuid without version (some systems)
+    if command -v uuid &>/dev/null; then
+        uuid=$(uuid 2>/dev/null)
+        [ -n "$uuid" ] && echo "$uuid" && return 0
+    fi
+    
+    # Try reading from /proc/sys/kernel/random/uuid (Linux)
+    if [ -r /proc/sys/kernel/random/uuid ]; then
+        uuid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+        [ -n "$uuid" ] && echo "$uuid" && return 0
+    fi
+    
+    # Fallback: use openssl or /dev/urandom to generate UUID-like string
+    if command -v openssl &>/dev/null; then
+        uuid=$(openssl rand -hex 16 | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\)/\1-\2-\3-\4-\5/' 2>/dev/null)
+        [ -n "$uuid" ] && echo "$uuid" && return 0
+    fi
+    
+    # Last resort: use /dev/urandom directly
+    uuid=$(dd if=/dev/urandom bs=1 count=16 2>/dev/null | od -An -tx1 | tr -d ' \n' | sed 's/\(........\)\(....\)\(....\)\(....\)\(............\)/\1-\2-\3-\4-\5/')
+    [ -n "$uuid" ] && echo "$uuid" && return 0
+    
+    return 1
+}
+
 function check_requirements() {
     local missing=()
     
-    for cmd in cryptsetup parted losetup mkfs.ext4 resize2fs dd uuid; do
+    # Core required commands
+    for cmd in cryptsetup parted losetup mkfs.ext4 resize2fs dd; do
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     
-    [ ${#missing[@]} -gt 0 ] && errexit "Missing required commands: ${missing[*]}\nInstall with: apt install cryptsetup parted uuid e2fsprogs"
+    if [ ${#missing[@]} -gt 0 ]; then
+        errexit "Missing required commands: ${missing[*]}\nInstall with: apt install cryptsetup parted e2fsprogs"
+    fi
     
-    [ "$EUID" -ne 0 ] && errexit "This script must be run as root"
+    # Check for UUID generation capability (not required, but warn if none available)
+    if ! generate_uuid &>/dev/null; then
+        warn "No UUID generation method found. Keyfile names may be less unique."
+    fi
+    
+    if [ "$EUID" -ne 0 ]; then
+        errexit "This script must be run as root"
+    fi
 }
 
 function generate_keyfile() {
     local keydir="$1"
     local keyuuid
     
-    keyuuid=$(uuid -v4)
+    # Try to generate UUID using available method
+    keyuuid=$(generate_uuid)
+    
+    # Fallback to timestamp-based name if UUID generation fails
+    if [ -z "$keyuuid" ]; then
+        keyuuid="key-$(date +%s)-$$-$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+        warn "UUID generation failed, using timestamp-based keyfile name"
+    fi
+    
     local keypath="${keydir}/${keyuuid}.lek"
     
     mkdir -p "$keydir"
@@ -372,6 +444,7 @@ MOUNT_ORIG=""
 MOUNT_BOOT=""
 MOUNT_ENCRYPTED=""
 CRYPT_NAME=""
+CLEANUP_DONE=0
 
 # Parse arguments
 while [ $# -gt 0 ]; do
