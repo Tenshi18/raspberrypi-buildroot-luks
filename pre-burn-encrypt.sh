@@ -330,22 +330,13 @@ function configure_boot() {
             new_cmdline="${new_cmdline} luks.crypttab=no"
         fi
         
+        # Add keyfile name for initramfs USB search
+        if ! echo "$new_cmdline" | grep -q "luks.keyfile="; then
+            new_cmdline="${new_cmdline} luks.keyfile=${keyfile_name}"
+        fi
+        
         echo "$new_cmdline" > "$cmdline_file"
         info "New cmdline: $new_cmdline"
-    fi
-    
-    # Configure crypttab in rootfs
-    info "Configuring /etc/crypttab..."
-    local crypttab="${root_mount}/etc/crypttab"
-    local partuuid
-    partuuid=$(blkid -s PARTUUID -o value "$root_part" 2>/dev/null || echo "")
-    
-    # Create crypttab entry
-    # Format: name device keyfile options
-    if [ -n "$partuuid" ]; then
-        echo "${mapper_name} PARTUUID=${partuuid} ${keyfile_name%.lek} luks,discard,keyscript=/usr/bin/sdmluksunlock" > "$crypttab"
-    else
-        echo "${mapper_name} ${root_part} ${keyfile_name%.lek} luks,discard,keyscript=/usr/bin/sdmluksunlock" > "$crypttab"
     fi
     
     # Update fstab
@@ -355,94 +346,10 @@ function configure_boot() {
         sed -i "s|^[^#].*[[:space:]]/[[:space:]]|/dev/mapper/${mapper_name} / |" "$fstab"
     fi
     
-    # Copy keyfile to initramfs assets location
-    info "Copying keyfile for initramfs..."
-    mkdir -p "${root_mount}/etc/sdm/assets/cryptroot"
-    cp "$keyfile" "${root_mount}/etc/sdm/assets/cryptroot/"
-    
-    # Create configuration files for initramfs scripts
-    echo "$mapper_name" > "${root_mount}/etc/mappername"
-    echo "$crypto" > "${root_mount}/etc/sdmcrypto"
-    echo "$keyfile_name" > "${root_mount}/etc/sdmkeyfile"
-    
-    # Copy sdmluksunlock script (for USB key unlock)
-    install_unlock_scripts "$root_mount"
+    # NOTE: Keyfile is NOT stored in rootfs for security
+    # USB key is REQUIRED - keyfile name is passed via cmdline (luks.keyfile=)
 }
 
-function install_unlock_scripts() {
-    local root_mount="$1"
-    
-    info "Installing unlock scripts..."
-    
-    mkdir -p "${root_mount}/usr/bin"
-    
-    # Create sdmluksunlock script
-    cat > "${root_mount}/usr/bin/sdmluksunlock" << 'UNLOCK_EOF'
-#!/bin/bash
-#
-# sdmluksunlock - Unlock LUKS rootfs with USB keyfile
-# Called by initramfs when it's time to read the LUKS unlock key
-#
-
-trydisks() {
-    echo "" >/dev/console
-    echo "> sdmluksunlock: Looking for USB disk with LUKS keyfile '${kfn}'" >/dev/console
-    echo "" >/dev/console
-    
-    while :; do
-        sleep 1
-        while read -r usbpartition; do
-            usbdevice=$(readlink -f "$usbpartition")
-            if mount -t vfat "$usbdevice" /mnt 2>/dev/null; then
-                echo "> Mounted disk $usbdevice" >/dev/console
-                if [ -e "/mnt/$kfn" ]; then
-                    echo "> Found keyfile '$kfn'" >/dev/console
-                    echo "> Unlocking rootfs" >/dev/console
-                    cat "/mnt/$kfn"   # Output key to caller
-                    umount "$usbdevice" >/dev/null 2>&1 || continue
-                    echo "> sdmluksunlock: Kill askpass; Ignore 'Killed' message" >/dev/console
-                    aps=$(ps e | grep askpass | grep -v grep | awk '{print $1}')
-                    [ -n "$aps" ] && kill -KILL "$aps" >/dev/null 2>/dev/null
-                    exit 0
-                else
-                    echo "% sdmluksunlock: Key '${kfn%.lek}' not found on this disk" >/dev/console
-                    umount "$usbdevice" >/dev/null 2>&1 || continue
-                fi
-            else
-                echo "% sdmluksunlock: This disk does not have a vfat partition" >/dev/console
-                umount "$usbdevice" >/dev/null 2>&1 || continue
-            fi
-        done < <(compgen -G "/dev/disk/by-id/usb-*-part1")
-    done
-}
-
-set -e
-mkdir -p /mnt
-
-if [ -n "$CRYPTTAB_KEY" ]; then
-    kfn=$(basename "$CRYPTTAB_KEY")
-    kfn="${kfn%.lek}.lek"
-fi
-
-if [ -n "$kfn" ]; then
-    if [ "$2" = "trydisks" ]; then
-        touch /tmp/ftrydisk
-        trydisks
-        exit
-    else
-        [ ! -f /tmp/ftrydisk ] && ( sdmluksunlock "$CRYPTTAB_KEY" trydisks </dev/null & )
-    fi
-fi
-
-echo "" >/dev/console
-/lib/cryptsetup/askpass "Insert USB Keyfile Disk or type passphrase then press ENTER:"
-aps=$(ps e | grep trydisks | grep -v grep | awk '{print $1}')
-[ -n "$aps" ] && kill -KILL "$aps" >/dev/null 2>/dev/null
-exit 0
-UNLOCK_EOF
-
-    chmod 755 "${root_mount}/usr/bin/sdmluksunlock"
-}
 
 #
 # Main script
