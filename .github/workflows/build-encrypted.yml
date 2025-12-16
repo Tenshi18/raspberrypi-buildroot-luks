@@ -1,4 +1,4 @@
-name: Build Raspberry Pi Image
+name: Build Raspberry Pi LUKS Image
 
 on:
   workflow_dispatch:
@@ -11,6 +11,16 @@ on:
         options:
           - raspberrypi5
           - raspberrypizero2w-64
+      encrypt:
+        description: 'Enable LUKS encryption'
+        required: true
+        default: true
+        type: boolean
+      keep_unencrypted:
+        description: 'Keep unencrypted image'
+        required: false
+        default: false
+        type: boolean
       buildroot_version:
         description: 'Buildroot version'
         required: false
@@ -31,6 +41,7 @@ jobs:
       target_board: ${{ env.TARGET_BOARD }}
     env:
       HAS_BOARD_OVERLAY: ${{ secrets.BOARD_OVERLAY_TAR_BASE64 != '' }}
+      HAS_LUKS_KEYFILE: ${{ secrets.LUKS_KEYFILE_BASE64 != '' }}
       HAS_GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDENTIALS != '' }}
 
     steps:
@@ -149,8 +160,16 @@ jobs:
           # Load defconfig
           make $DEFCONFIG
           
-          # Explicitly disable encryption
-          echo "BR2_LUKS_ENCRYPT=n" >> .config
+          # Configure encryption based on input
+          if [ "${{ github.event.inputs.encrypt }}" = "false" ]; then
+            echo "BR2_LUKS_ENCRYPT=n" >> .config
+          else
+            echo "BR2_LUKS_ENCRYPT=y" >> .config
+          fi
+          
+          if [ "${{ github.event.inputs.keep_unencrypted }}" = "true" ]; then
+            echo "BR2_LUKS_KEEP_UNENCRYPTED=y" >> .config
+          fi
           
           # Set cache directories
           echo "BR2_DL_DIR=\"${BR2_DL_DIR}\"" >> .config
@@ -168,15 +187,102 @@ jobs:
           # Build with parallel jobs
           make -j$(nproc)
 
-      - name: Prepare artifacts
+      - name: Prepare keyfile from secret (if provided)
+        if: ${{ github.event.inputs.encrypt != 'false' && env.HAS_LUKS_KEYFILE == 'true' }}
+        env:
+          LUKS_KEYFILE_BASE64: ${{ secrets.LUKS_KEYFILE_BASE64 }}
         run: |
-          mkdir -p artifacts
+          # Mask the base64-encoded secret in logs
+          echo "::add-mask::$LUKS_KEYFILE_BASE64"
+          
+          mkdir -p buildroot/output/images/keys
+          echo "$LUKS_KEYFILE_BASE64" | base64 -d > buildroot/output/images/keys/secret.lek
+          chmod 600 buildroot/output/images/keys/secret.lek
+          
+          # Mark that we used a secret (don't upload keyfile later)
+          touch buildroot/output/images/keys/.from_secret
+          echo "Using keyfile from GitHub Secret"
+
+      - name: Encrypt image (if enabled)
+        if: ${{ github.event.inputs.encrypt != 'false' }}
+        env:
+          LUKS_KEYFILE_BASE64: ${{ secrets.LUKS_KEYFILE_BASE64 }}
+          LUKS_PASSPHRASE: ${{ secrets.LUKS_PASSPHRASE }}
+        run: |
           cd buildroot/output/images
           
-          # Copy images
+          # Check if encryption was done by post-image script
+          if [ -f "encryption-info.txt" ]; then
+            echo "Image already encrypted by post-image script"
+            cat encryption-info.txt
+          else
+            echo "Running manual encryption..."
+            
+            # Determine key source
+            KEYFILE_ARG=""
+            if [ -f "./keys/secret.lek" ]; then
+              # Use keyfile from secret
+              KEYFILE_ARG="--keyfile ./keys/secret.lek"
+              echo "Using keyfile from GitHub Secret"
+            elif [ -n "$LUKS_PASSPHRASE" ]; then
+              # Mask derived values in logs
+              PASS_HASH=$(echo -n "$LUKS_PASSPHRASE" | sha256sum | cut -d' ' -f1)
+              echo "::add-mask::$PASS_HASH"
+              
+              # Use passphrase from secret (create keyfile from it)
+              mkdir -p ./keys
+              echo -n "$PASS_HASH" | xxd -r -p > ./keys/passphrase.lek
+              dd if=/dev/urandom bs=1 count=224 >> ./keys/passphrase.lek 2>/dev/null
+              KEYFILE_ARG="--keyfile ./keys/passphrase.lek"
+              
+              # Mark that we used a secret
+              touch ./keys/.from_secret
+              echo "Using passphrase-derived keyfile from GitHub Secret"
+            else
+              # Generate unique keyfile
+              KEYFILE_ARG="--keydir ./keys"
+              echo "Generating unique keyfile"
+            fi
+            
+            sudo ${{ github.workspace }}/pre-burn-encrypt.sh \
+              $KEYFILE_ARG \
+              --crypto aes \
+              sdcard.img \
+              sdcard-encrypted.img
+          fi
+
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts artifacts-keys
+          cd buildroot/output/images
+          
+          # Copy images (NOT keys)
+          if [ -f "sdcard-encrypted.img" ]; then
+            xz -T0 -9 sdcard-encrypted.img
+            cp sdcard-encrypted.img.xz ${{ github.workspace }}/artifacts/
+          fi
+          
           if [ -f "sdcard.img" ]; then
             xz -T0 -9 sdcard.img
             cp sdcard.img.xz ${{ github.workspace }}/artifacts/
+          fi
+          
+          # Copy encryption info (without sensitive data)
+          if [ -f "encryption-info.txt" ]; then
+            cp encryption-info.txt ${{ github.workspace }}/artifacts/
+          fi
+          
+          # Handle keyfiles separately
+          if [ -d "keys" ]; then
+            if [ -f "keys/.from_secret" ]; then
+              # Keyfile came from secret - don't upload it
+              echo "Keyfile from GitHub Secret - not uploading to artifacts"
+              echo "SKIP_KEYFILE_UPLOAD=true" >> $GITHUB_ENV
+            else
+              # Auto-generated keyfile - upload to separate artifact
+              cp -r keys ${{ github.workspace }}/artifacts-keys/
+              echo "Auto-generated keyfile will be uploaded"
+            fi
           fi
           
           # Create checksums
@@ -207,11 +313,22 @@ jobs:
           # Create folder structure: builds/<board>-<date>-<run_id>/
           BUILD_FOLDER="builds/${{ env.TARGET_BOARD }}-$(date +%Y-%m-%d)-${{ github.run_id }}"
           
-          # Upload image
-          if [ -f "artifacts/sdcard.img.xz" ]; then
-            echo "Uploading image to Google Drive..."
-            rclone copy artifacts/sdcard.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
+          # Upload encrypted image
+          if [ -f "artifacts/sdcard-encrypted.img.xz" ]; then
+            echo "Uploading encrypted image to Google Drive..."
+            rclone copy artifacts/sdcard-encrypted.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
             rclone copy artifacts/SHA256SUMS.txt "gdrive:${BUILD_FOLDER}/images/" --progress
+          fi
+          
+          # Upload keyfiles (only if auto-generated)
+          if [ "$SKIP_KEYFILE_UPLOAD" != "true" ] && [ -d "artifacts-keys/keys" ]; then
+            echo "Uploading keyfiles to Google Drive..."
+            rclone copy artifacts-keys/keys/ "gdrive:${BUILD_FOLDER}/keys/" --progress
+          fi
+          
+          # Upload encryption info
+          if [ -f "artifacts/encryption-info.txt" ]; then
+            rclone copy artifacts/encryption-info.txt "gdrive:${BUILD_FOLDER}/" --progress
           fi
           
           # Create manifest
@@ -224,7 +341,7 @@ jobs:
           Branch: ${{ github.ref_name }}
           Date: $(date -Iseconds)
           Buildroot: ${BUILDROOT_VERSION}
-          Encrypted: false
+          Encrypted: ${{ github.event.inputs.encrypt }}
           
           Files:
           $(ls -la artifacts/ 2>/dev/null || echo "No artifacts")
@@ -240,10 +357,19 @@ jobs:
         if: ${{ env.HAS_GDRIVE_CREDS == 'false' }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.TARGET_BOARD }}-images
+          name: ${{ env.TARGET_BOARD }}-luks-images
           path: artifacts/
           retention-days: 30
           if-no-files-found: error
+
+      - name: Upload keyfiles (fallback to GitHub)
+        if: ${{ env.HAS_GDRIVE_CREDS == 'false' && github.event.inputs.encrypt != 'false' && env.SKIP_KEYFILE_UPLOAD != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TARGET_BOARD }}-luks-keys
+          path: artifacts-keys/
+          retention-days: 7
+          if-no-files-found: warn
 
   # Optional: Create release on tag
   release:
@@ -257,7 +383,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.build.outputs.target_board }}-images
+          name: ${{ needs.build.outputs.target_board }}-luks-images
           path: release/
 
       - name: Create Release
@@ -266,17 +392,23 @@ jobs:
           files: |
             release/*.img.xz
             release/SHA256SUMS.txt
+            release/encryption-info.txt
           body: |
-            ## Raspberry Pi Image (${{ needs.build.outputs.target_board }})
+            ## Raspberry Pi LUKS Encrypted Image (${{ needs.build.outputs.target_board }})
             
             ### Files
-            - `sdcard.img.xz` - SD card image
+            - `sdcard-encrypted.img.xz` - Encrypted SD card image
+            - `sdcard.img.xz` - Unencrypted image (if enabled)
             
             ### Usage
             ```bash
             # Extract and burn
-            xz -d sdcard.img.xz
-            sudo dd if=sdcard.img of=/dev/sdX bs=4M status=progress
+            xz -d sdcard-encrypted.img.xz
+            sudo dd if=sdcard-encrypted.img of=/dev/sdX bs=4M status=progress
             ```
+            
+            **Important:** Download keyfiles from workflow artifacts (expires in 7 days)
           draft: false
           prerelease: false
+
+
