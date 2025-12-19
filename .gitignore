@@ -66,3 +66,5 @@ logs/
 /.config.old
 /.auto.deps
 
+# buildroot-external is stored as GitHub secret (BUILDROOT_EXTERNAL_TAR_BASE64)
+buildroot-external/
