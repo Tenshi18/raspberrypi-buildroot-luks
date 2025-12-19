@@ -290,13 +290,15 @@ function encrypt_image() {
     info "Creating LUKS2 encrypted container with cipher: $cipher"
     
     # Format with LUKS using keyfile (no passphrase prompt)
+    # Using pbkdf2 instead of argon2i for low-memory devices (RPi Zero 2W has 512MB)
+    # argon2i requires ~1GB RAM to open keyslot, pbkdf2 works with much less
     cryptsetup luksFormat \
         --type luks2 \
         --cipher "$cipher" \
         --hash sha256 \
         --iter-time 5000 \
         --key-size 256 \
-        --pbkdf argon2i \
+        --pbkdf pbkdf2 \
         --batch-mode \
         --key-file "$keyfile" \
         "$root_part"
