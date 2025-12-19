@@ -292,11 +292,13 @@ function encrypt_image() {
     # Format with LUKS using keyfile (no passphrase prompt)
     # Using pbkdf2 instead of argon2i for low-memory devices (RPi Zero 2W has 512MB)
     # argon2i requires ~1GB RAM to open keyslot, pbkdf2 works with much less
+    # iter-time 1000ms = ~3M iterations, reasonable for embedded ARM devices
+    # (5000ms on x86 = 14M iterations, too slow on emulated/real ARM)
     cryptsetup luksFormat \
         --type luks2 \
         --cipher "$cipher" \
         --hash sha256 \
-        --iter-time 5000 \
+        --iter-time 1000 \
         --key-size 256 \
         --pbkdf pbkdf2 \
         --batch-mode \
