@@ -59,22 +59,20 @@ jobs:
           
           echo "Extracting buildroot-external from secret..."
           
-          # Create directory if it doesn't exist
-          mkdir -p buildroot-external
-          
           # Decode and extract
-          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -xz -C buildroot-external/
+          # Archive should contain buildroot-external/ directory structure
+          # Extract to workspace root (not into buildroot-external/)
+          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -xz
           
           # Show what was extracted (filenames only, no content)
           echo "Extracted buildroot-external structure:"
           find buildroot-external -type f | head -30
           
-          # Set permissions for sensitive files
-          chmod 600 buildroot-external/board/*/rootfs-overlay/etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null || true
-          chmod 700 buildroot-external/board/*/rootfs-overlay/etc/init.d/* 2>/dev/null || true
-          chmod 700 buildroot-external/board/*/rootfs-overlay/root/*.py 2>/dev/null || true
+          # Set execute permissions for host scripts only
+          # Files in rootfs-overlay/ get permissions from file_permissions.txt via BR2_ROOTFS_DEVICE_TABLE
           chmod +x buildroot-external/scripts/*.sh 2>/dev/null || true
-          chmod +x buildroot-external/package/*/src/Makefile 2>/dev/null || true
+          chmod +x buildroot-external/board/*/post-build.sh 2>/dev/null || true
+          chmod +x buildroot-external/board/*/post-image.sh 2>/dev/null || true
 
       - name: Extract secret board overlay (legacy, if buildroot-external not in secret)
         if: ${{ env.HAS_BOARD_OVERLAY == 'true' && env.HAS_BUILDROOT_EXTERNAL == 'false' }}
@@ -87,17 +85,21 @@ jobs:
           BOARD_DIR="buildroot-external/board/${{ env.TARGET_BOARD }}"
           echo "Extracting secret board overlay to $BOARD_DIR..."
           
+          # Create directory if it doesn't exist
+          mkdir -p "$BOARD_DIR"
+          
           # Decode and extract
+          # Archive should contain files without parent directory (created with -C board-dir .)
           echo "$BOARD_OVERLAY_TAR_BASE64" | base64 -d | tar -xz -C "$BOARD_DIR/"
           
           # Show what was extracted (filenames only, no content)
           echo "Extracted files:"
           find "$BOARD_DIR" -type f | head -20
           
-          # Set permissions for sensitive files
-          chmod 600 "$BOARD_DIR"/rootfs-overlay/etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null || true
-          chmod 700 "$BOARD_DIR"/rootfs-overlay/etc/init.d/* 2>/dev/null || true
-          chmod 700 "$BOARD_DIR"/rootfs-overlay/root/*.py 2>/dev/null || true
+          # Set execute permissions for host scripts only
+          # Files in rootfs-overlay/ get permissions from file_permissions.txt via BR2_ROOTFS_DEVICE_TABLE
+          chmod +x "$BOARD_DIR"/post-build.sh 2>/dev/null || true
+          chmod +x "$BOARD_DIR"/post-image.sh 2>/dev/null || true
 
       - name: Free up disk space
         run: |
