@@ -54,11 +54,10 @@ jobs:
           
           echo "Extracting buildroot-external from secret..."
           
-          # Create directory if it doesn't exist
-          mkdir -p buildroot-external
-          
           # Decode and extract
-          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -xz -C buildroot-external/
+          # Archive should contain buildroot-external/ directory structure
+          # Extract to workspace root (not into buildroot-external/)
+          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -xz
           
           # Show what was extracted (filenames only, no content)
           echo "Extracted buildroot-external structure:"
