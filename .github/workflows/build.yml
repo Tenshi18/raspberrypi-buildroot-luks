@@ -194,7 +194,7 @@ jobs:
           if [ "${{ env.BUILD_DEBUG }}" = "true" ] && [ "${{ env.TARGET_BOARD }}" = "raspberrypizero2w-64" ]; then
             echo "Adding virtio debug fragment for QEMU virt machine..."
             # Use Buildroot variable format for consistency with defconfig
-            VIRTIO_FRAGMENT="\$(BR2_EXTERNAL_LUKS_PI5_PATH)/board/raspberrypizero2w-64/linux-virtio-debug.fragment"
+            VIRTIO_FRAGMENT="\$(BR2_EXTERNAL_LUKS_PI_PATH)/board/raspberrypizero2w-64/linux-virtio-debug.fragment"
             VIRTIO_FRAGMENT_ABS="${BR2_EXTERNAL}/board/raspberrypizero2w-64/linux-virtio-debug.fragment"
             
             if [ -f "$VIRTIO_FRAGMENT_ABS" ]; then
