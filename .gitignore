@@ -2,7 +2,6 @@
 keys/
 *.lek
 encrypted/
-*.img
 
 # Build output directories
 output/
@@ -68,3 +67,12 @@ logs/
 
 # buildroot-external is stored as GitHub secret (BUILDROOT_EXTERNAL_TAR_BASE64)
 buildroot-external/
+
+# Build artifacts
+*.zip
+*.tar.gz
+*.img
+*.img.xz
+*.cpio.gz
+Image
+SHA256SUMS.txt
