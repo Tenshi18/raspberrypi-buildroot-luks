@@ -9,11 +9,11 @@
 
 ## Особенности
 
-- **Pre-burn шифрование** — шифрование образа до записи на карту
-- **Уникальные ключи** — каждый образ получает свой UUID-based keyfile
-- **USB-ключ** — разблокировка rootfs через USB-накопитель с keyfile
-- **Пакетная обработка** — создание множества образов за один запуск
-- **Buildroot ready** — полная интеграция с Buildroot для RPi5 и RPi Zero 2W
+- **Pre-burn шифрование** - шифрование образа до записи на карту
+- **Уникальные ключи** - каждый образ получает свой UUID-based keyfile
+- **USB-ключ** - разблокировка rootfs через USB-накопитель с keyfile
+- **Пакетная обработка** - создание множества образов за один запуск
+- **Buildroot ready** - полная интеграция с Buildroot для RPi5 и RPi Zero 2W
 
 ## Быстрый старт
 
@@ -33,7 +33,7 @@ sudo ./batch-encrypt-images.sh buildroot.img 10
 # Результат:
 # encrypted/device_001.img, device_002.img, ...
 # keys/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.lek, ...
-# manifest.csv — соответствие образов и ключей
+# manifest.csv - соответствие образов и ключей
 ```
 
 ### 3. Подготовка USB-ключа
@@ -65,22 +65,77 @@ sudo dd if=encrypted/device_001.img of=/dev/sdY bs=4M status=progress
     ├── external.desc                # Описание external tree
     ├── external.mk                  # Makefile расширений
     ├── Config.in                    # Меню конфигурации LUKS
-    ├── pre-burn-encrypt.sh          # Копия скрипта для post-image
     │
     ├── configs/
     │   ├── raspberrypi5_luks_defconfig         # RPi5 defconfig
     │   └── raspberrypizero2w_64_luks_defconfig # RPi Zero 2W defconfig
     │
     ├── scripts/
-    │   ├── post-build.sh            # Pre-image подготовка rootfs
-    │   └── post-image-encrypt.sh    # Автошифрование после сборки
+    │   ├── post-build.sh             # Общий pre-image скрипт
+    │   └── post-image-encrypt.sh     # Автошифрование после сборки
     │
-    └── board/raspberrypi5/
-        ├── linux-luks.fragment      # Crypto-модули ядра
-        └── rootfs-overlay/          # Файлы для rootfs
-            ├── init                 # Initramfs init с LUKS
-            ├── etc/init.d/S00cryptroot
-            └── usr/bin/sdmluksunlock
+    ├── package/                      # Кастомные пакеты Buildroot
+    │   ├── busybox/
+    │   │   └── busybox-runit.config  # Конфигурация busybox для runit
+    │   └── custom-app/               # Пример кастомного пакета
+    │       ├── Config.in
+    │       ├── custom-app.mk
+    │       └── src/
+    │
+    └── board/                        # Конфигурации для каждого устройства
+        ├── raspberrypi5/             # Raspberry Pi 5 (использует OpenRC)
+        │   ├── cmdline.txt           # Параметры ядра
+        │   ├── file_permissions.txt  # Права доступа к файлам
+        │   ├── genimage.cfg          # Конфигурация образа
+        │   ├── linux-luks.fragment   # Crypto-модули ядра
+        │   ├── post-build.sh         # Board-specific post-build
+        │   ├── post-image.sh         # Board-specific post-image
+        │   └── rootfs-overlay/       # Файлы для rootfs
+        │       ├── init              # Initramfs init с LUKS
+        │       ├── etc/
+        │       │   ├── chrony.conf
+        │       │   ├── hostname
+        │       │   ├── init.d/       # OpenRC init-скрипты
+        │       │   │   ├── custom-app    # Пример кастомного сервиса
+        │       │   │   └── S99custom-app
+        │       │   ├── inittab
+        │       │   ├── NetworkManager/
+        │       │   │   ├── NetworkManager.conf
+        │       │   │   └── system-connections/
+        │       │   │       └── sample.nmconnection
+        │       │   ├── runlevels/
+        │       │   │   └── default/  # OpenRC runlevels
+        │       │   └── sdm/assets/cryptroot/
+        │       ├── root/
+        │       │   └── custom-app.py # Пример кастомного Python-скрипта
+        │       └── var/log/
+        │
+        └── raspberrypizero2w-64/     # Raspberry Pi Zero 2W (использует runit)
+            ├── cmdline.txt
+            ├── file_permissions.txt
+            ├── genimage.cfg
+            ├── linux-luks.fragment
+            ├── linux-virtio-debug.fragment  # Debug конфигурация ядра
+            ├── post-build.sh
+            ├── post-image.sh
+            └── rootfs-overlay/
+                ├── init
+                ├── etc/
+                │   ├── chrony.conf
+                │   ├── hostname
+                │   ├── init.d/
+                │   │   └── rcS
+                │   ├── inittab
+                │   ├── NetworkManager/
+                │   │   ├── NetworkManager.conf
+                │   │   └── system-connections/
+                │   │       └── sample.nmconnection
+                │   ├── runit/        # Конфигурация runit
+                │   │   ├── 2
+                │   │   └── sv/
+                │   │       └── custom-app/  # Пример кастомного сервиса
+                │   └── service/      # Директория сервиса runit
+                └── var/log/
 ```
 
 ## Интеграция с Buildroot
@@ -118,6 +173,7 @@ make menuconfig
 #   (aes) Encryption algorithm          # aes для Pi5, xchacha для Pi4
 #   () Use existing keyfile             # оставить пустым для автогенерации
 #   [ ] Keep original unencrypted image # Сохранять ли оригинальные незашифрованные образы
+#   (cryptroot) Device mapper name      # Имя mapper'а для расшифрованного устройства
 ```
 
 **4. Соберите:**
@@ -136,12 +192,13 @@ make -j$(( $(nproc) / 2 ))
 
 ```
 output/images/
-├── sdcard.img              # Зашифрованный образ (заменяет оригинал)
-├── sdcard-encrypted.img    # Симлинк на зашифрованный
+├── sdcard.img              # Зашифрованный образ (заменяет оригинал, если BR2_LUKS_KEEP_UNENCRYPTED=n)
 ├── keys/
 │   └── <uuid>.lek          # Уникальный keyfile
 └── encryption-info.txt     # Инструкции по использованию
 ```
+
+**Примечание:** По умолчанию (`BR2_LUKS_KEEP_UNENCRYPTED=n`) оригинальный `sdcard.img` заменяется на зашифрованный. Если включена опция `BR2_LUKS_KEEP_UNENCRYPTED=y`, оригинальный незашифрованный образ сохраняется как `sdcard-unencrypted.img`, а зашифрованный образ создается как `sdcard-encrypted.img`.
 
 ### Ручное шифрование (без автоматизации)
 
@@ -166,23 +223,24 @@ flowchart TD
     subgraph Buildroot
         A[make] --> B[Compile packages]
         B --> C[Create rootfs.ext4]
-        C --> D[post-build.sh<br/>Configure LUKS scripts]
-        D --> E[Create sdcard.img]
-        E --> F[post-image.sh<br/>Raspberry Pi setup]
+        C --> D[scripts/post-build.sh<br/>General pre-image setup]
+        D --> E[board/*/post-build.sh<br/>Board-specific setup]
+        E --> F[Create sdcard.img]
+        F --> G[board/*/post-image.sh<br/>Raspberry Pi setup]
     end
     
     subgraph "LUKS Encryption"
-        F --> G[post-image-encrypt.sh]
-        G --> H{BR2_LUKS_ENCRYPT=y?}
-        H -->|No| Done[sdcard.img<br/>unencrypted]
-        H -->|Yes| I[Generate keyfile]
-        I --> J[Encrypt rootfs]
-        J --> K[sdcard.img<br/>encrypted]
-        K --> L[Save keyfile<br/>to keys/]
+        G --> H[scripts/post-image-encrypt.sh]
+        H --> I{BR2_LUKS_ENCRYPT=y?}
+        I -->|No| Done[sdcard.img<br/>unencrypted]
+        I -->|Yes| J[Generate keyfile]
+        J --> K[Encrypt rootfs]
+        K --> L[sdcard.img<br/>encrypted]
+        L --> M[Save keyfile<br/>to keys/]
     end
     
-    style K fill:#c8e6c9,color:#000
-    style L fill:#fff9c4,color:#000
+    style L fill:#c8e6c9,color:#000
+    style M fill:#fff9c4,color:#000
 ```
 
 ### Опции Config.in
@@ -194,6 +252,7 @@ flowchart TD
 | `BR2_LUKS_KEYDIR` | Директория для ключей | $(BINARIES_DIR)/keys |
 | `BR2_LUKS_KEYFILE` | Использовать существующий ключ | (пусто) |
 | `BR2_LUKS_KEEP_UNENCRYPTED` | Сохранить незашифрованную копию | n |
+| `BR2_LUKS_MAPPER_NAME` | Имя device mapper | cryptroot |
 
 ## Как это работает
 
@@ -297,11 +356,11 @@ sudo apt install cryptsetup parted uuid-runtime e2fsprogs rsync
 
 **Важно:**
 
-1. **Храните keyfiles безопасно** — потеря ключа = потеря данных
+1. **Храните keyfiles безопасно**: потеря ключа = потеря данных
 2. **Создайте резервные копии** ключей в защищённом месте
 3. **Не храните ключи вместе с образами** в production
 4. **Используйте --keep-passphrase** для резервного способа разблокировки
-5. **manifest.csv содержит чувствительную информацию** — защитите его
+5. **manifest.csv содержит чувствительную информацию** - защитите его
 
 ## Производительность шифрования
 
@@ -316,7 +375,7 @@ xchacha20-adiantum: ~170 MiB/s шифрование, ~180 MiB/s дешифров
 aes-xts-plain64:    ~88 MiB/s шифрование, ~108 MiB/s дешифрование
 ```
 
-Используйте `--crypto xchacha` для Pi4 и более ранних моделей.
+Используйте `--crypto xchacha` для Zero 2W, а также для Pi4 и более ранних моделей.
 
 ## CI/CD с GitHub Actions
 
@@ -354,7 +413,7 @@ gh workflow run build.yml -f board=raspberrypizero2w-64 -f encrypt=true
 | `GDRIVE_CREDENTIALS` | Google Drive: `builds/<date>-<run_id>/` |
 | Ничего | GitHub Artifacts (fallback) |
 
-**Google Drive структура:**
+**Структуруа Google Drive:**
 ```
 builds/2025-12-13-12345678/
 ├── images/sdcard-encrypted.img.xz
@@ -363,8 +422,8 @@ builds/2025-12-13-12345678/
 ```
 
 **GitHub Artifacts (fallback):**
-- `rpi5-luks-images` — образы (30 дней)
-- `rpi5-luks-keys` — keyfiles (7 дней, только при автогенерации)
+- `rpi5-luks-images` - образы (30 дней)
+- `rpi5-luks-keys` - keyfiles (7 дней, только при автогенерации)
 
 ### GitHub Secrets
 
@@ -374,7 +433,7 @@ builds/2025-12-13-12345678/
 | `LUKS_PASSPHRASE` | Пароль для шифрования (опционально) |
 | `GDRIVE_CREDENTIALS` | Google Service Account JSON |
 | `GDRIVE_FOLDER_ID` | ID папки в Google Drive |
-| `BOARD_OVERLAY_TAR_BASE64` | Секретный board overlay (tar.gz в base64) |
+| `BUILDROOT_EXTERNAL_TAR_BASE64` | Директория buildroot-external в tar.gz (base64) |
 
 **Приоритет ключей:** Secret keyfile → Secret passphrase → Автогенерация
 
@@ -409,49 +468,98 @@ builds/
     └── build-info.txt
 ```
 
-### Секретный Board Overlay
+### Секретный Buildroot External
 
-Для хранения конфиденциальных файлов (данные WiFi-сети, скрипты, конфиги):
+Для хранения конфиденциальных файлов (данные WiFi-сети, скрипты, конфиги, секретные board-конфигурации):
+
+**Структура директории buildroot-external:**
+```
+buildroot-external/
+├── external.desc                # Описание external tree
+├── external.mk                  # Makefile расширений
+├── Config.in                    # Меню конфигурации
+├── configs/                     # Файлы defconfig
+│   ├── raspberrypi5_luks_defconfig
+│   └── raspberrypizero2w_64_luks_defconfig
+├── scripts/                     # Общие скрипты
+│   ├── post-build.sh
+│   └── post-image-encrypt.sh
+├── package/                     # Кастомные пакеты
+│   ├── busybox/
+│   └── custom-app/
+└── board/                       # Конфигурации для каждого устройства
+    ├── raspberrypi5/            # Raspberry Pi 5 (OpenRC)
+    │   ├── cmdline.txt          # Параметры ядра (может содержать секреты)
+    │   ├── file_permissions.txt
+    │   ├── genimage.cfg
+    │   ├── linux-luks.fragment
+    │   ├── post-build.sh
+    │   ├── post-image.sh
+    │   └── rootfs-overlay/
+    │       ├── etc/
+    │       │   ├── NetworkManager/system-connections/*.nmconnection  # Конфигурации WiFi-сетей
+    │       │   ├── init.d/      # OpenRC init-скрипты
+    │       │   │   ├── custom-app
+    │       │   │   └── S99custom-app
+    │       │   └── runlevels/default/
+    │       └── root/            # Пользовательские скрипты
+    │           └── custom-app.py
+    └── raspberrypizero2w-64/    # Raspberry Pi Zero 2W (runit)
+        ├── cmdline.txt
+        ├── file_permissions.txt
+        ├── genimage.cfg
+        ├── linux-luks.fragment
+        ├── linux-virtio-debug.fragment
+        ├── post-build.sh
+        ├── post-image.sh
+        └── rootfs-overlay/
+            ├── etc/
+            │   ├── NetworkManager/system-connections/*.nmconnection
+            │   ├── init.d/rcS
+            │   └── runit/       # Runit-сервисы
+            │       ├── 2
+            │       └── sv/
+            │           └── custom-app/
+            │               ├── run
+            │               ├── finish
+            │               └── log/run
+            └── root/
+```
+
+**Инструкции по наполнению:**
+
+1. **Скопируйте базовую структуру** из репозитория (или создайте заново)
+
+2. **Добавьте секретные файлы:**
+   - `board/*/cmdline.txt` - параметры ядра (если нужны секретные параметры)
+   - `board/*/rootfs-overlay/etc/NetworkManager/system-connections/*.nmconnection` - файлы WiFi-соединений с паролями
+   - `board/*/rootfs-overlay/etc/init.d/*` - секретные init-скрипты
+   - `board/*/rootfs-overlay/root/*` - пользовательские скрипты и приложения
+   - Любые другие конфиденциальные файлы в `rootfs-overlay/`
+
+3. **Проверьте структуру:**
+   ```bash
+   # Убедитесь, что директория содержит все необходимые файлы
+   ls -la buildroot-external/
+   ```
 
 ```bash
-# 1. Создайте структуру:
-mkdir -p board-secret/rootfs-overlay/etc/NetworkManager/system-connections
-mkdir -p board-secret/rootfs-overlay/etc/init.d
-mkdir -p board-secret/rootfs-overlay/root
+# 4. Упакуйте весь buildroot-external в архив:
+tar -czf buildroot-external.tar.gz buildroot-external/
 
-# 2. Добавьте секретные файлы:
-#    - cmdline.txt
-#    - file_permissions.txt  
-#    - rootfs-overlay/...
+# 5. Закодируйте в base64 и добавьте в secrets:
+base64 -w 0 buildroot-external.tar.gz | gh secret set BUILDROOT_EXTERNAL_TAR_BASE64
 
-# 3. Упакуйте и добавьте в secrets:
-tar -czf - -C board-secret . | base64 | gh secret set BOARD_OVERLAY_TAR_BASE64
-
-# 4. Запустите сборку:
+# 6. Запустите сборку:
 gh workflow run build.yml -f board=raspberrypi5
 ```
 
-**Структура секретного архива:**
-```
-board-secret/
-├── cmdline.txt                        # Параметры ядра Linux
-├── file_permissions.txt               # Права доступа для файлов
-└── rootfs-overlay/
-    ├── etc/
-    │   ├── NetworkManager/
-    │   │   └── system-connections/
-    │   │       └── wifi.nmconnection  # Файл WiFi-соединения для NetworkManager
-    │   └── init.d/
-    │       └── custom-service         # Служба автозапуска
-    └── root/
-        └── app.py                     # Запускаемое программное обеспечение
-```
+**Примечание:** Архив должен содержать директорию `buildroot-external/` целиком со всей структурой. Workflow автоматически извлечет её в корень workspace.
 
 ## Лицензия
 
 MIT License
 
-## Благодарности
-
-- [sdm](https://github.com/gitbls/sdm) — оригинальные скрипты шифрования для Raspberry Pi OS
-
+## Благодарности и атрибуция
+Значительная часть логики шифрования, хуки initramfs, скрипт sdmluksunlock и другие компоненты заимствованы/адаптированы из проекта [sdm](https://github.com/gitbls/sdm) автора gitbls.
+Оригинальный код распространяется под MIT License. Спасибо за отличную работу!
