@@ -510,6 +510,21 @@ EOF
             ;;
     esac
     
+    # Configure initramfs modules for USB storage and filesystems (required for USB keyfile unlock)
+    info "Configuring initramfs modules for USB storage and filesystems..."
+    cat >> "${root_mount}/etc/initramfs-tools/modules" << EOF
+usbcore
+usbhid
+usb_storage
+uas
+ehci_hcd
+ohci_hcd
+scsi_mod
+sd_mod
+fat
+vfat
+EOF
+    
     # Update initramfs configuration
     sed -i "s/^MODULES=dep/MODULES=most/" "${root_mount}/etc/initramfs-tools/initramfs.conf" 2>/dev/null || true
     sed -i "s/^KEYMAP=n/KEYMAP=y/" "${root_mount}/etc/initramfs-tools/initramfs.conf" 2>/dev/null || true
