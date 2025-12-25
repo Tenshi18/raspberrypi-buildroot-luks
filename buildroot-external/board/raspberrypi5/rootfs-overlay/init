@@ -1,0 +1,237 @@
+#!/bin/sh
+#
+# Buildroot initramfs init script with LUKS support
+# This replaces the standard init to unlock encrypted rootfs early
+#
+
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+
+# Make console work
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+
+# Configuration
+MAPPER_NAME="cryptroot"
+ROOT_DEV=""
+CRYPT_DEV=""
+KEYFILE_NAME=""
+TIMEOUT=60
+
+# Parse command line
+parse_cmdline() {
+    for param in $(cat /proc/cmdline); do
+        case "$param" in
+            root=*)
+                ROOT_DEV="${param#root=}"
+                ;;
+            cryptdevice=*)
+                val="${param#cryptdevice=}"
+                CRYPT_DEV="${val%%:*}"
+                MAPPER_NAME="${val#*:}"
+                ;;
+            luks.keyfile=*)
+                KEYFILE_NAME="${param#luks.keyfile=}"
+                ;;
+        esac
+    done
+}
+
+# Wait for device to appear
+wait_for_device() {
+    local dev="$1"
+    local timeout="$2"
+    local count=0
+    
+    echo "Waiting for device: $dev"
+    
+    while [ $count -lt $timeout ]; do
+        # Resolve PARTUUID
+        if echo "$dev" | grep -q "^PARTUUID="; then
+            local uuid="${dev#PARTUUID=}"
+            local resolved
+            resolved=$(blkid -t PARTUUID="$uuid" -o device 2>/dev/null)
+            [ -b "$resolved" ] && echo "$resolved" && return 0
+        elif [ -b "$dev" ]; then
+            echo "$dev"
+            return 0
+        fi
+        
+        sleep 1
+        count=$((count + 1))
+        [ $((count % 10)) -eq 0 ] && echo "Still waiting... ($count/$timeout)"
+    done
+    
+    return 1
+}
+
+# Try to unlock with USB keyfile
+try_usb_keyfile() {
+    local crypt_dev="$1"
+    local mapper="$2"
+    local keyfile="$3"
+    local timeout=30
+    local count=0
+    
+    echo ""
+    echo "Looking for USB disk with keyfile: $keyfile"
+    echo "Insert USB key disk now..."
+    echo ""
+    
+    while [ $count -lt $timeout ]; do
+        # Scan USB devices
+        for usbpart in /dev/sd?1; do
+            [ -b "$usbpart" ] || continue
+            
+            mkdir -p /mnt
+            if mount -t vfat "$usbpart" /mnt 2>/dev/null; then
+                if [ -f "/mnt/$keyfile" ]; then
+                    echo "Found keyfile on $usbpart"
+                    
+                    if cryptsetup luksOpen "$crypt_dev" "$mapper" --key-file "/mnt/$keyfile"; then
+                        echo "SUCCESS: Rootfs unlocked with USB keyfile"
+                        umount /mnt
+                        return 0
+                    fi
+                    
+                    echo "Failed to unlock with this keyfile"
+                fi
+                umount /mnt 2>/dev/null
+            fi
+        done
+        
+        sleep 1
+        count=$((count + 1))
+        [ $((count % 5)) -eq 0 ] && echo "Waiting for USB key... ($count/$timeout)"
+    done
+    
+    echo "Timeout waiting for USB keyfile"
+    return 1
+}
+
+# Prompt for passphrase
+try_passphrase() {
+    local crypt_dev="$1"
+    local mapper="$2"
+    local tries=3
+    
+    while [ $tries -gt 0 ]; do
+        echo ""
+        echo "Enter passphrase for $crypt_dev:"
+        
+        # Read passphrase (no echo)
+        stty -echo
+        read passphrase
+        stty echo
+        echo ""
+        
+        if echo "$passphrase" | cryptsetup luksOpen "$crypt_dev" "$mapper" --key-file=-; then
+            echo "SUCCESS: Rootfs unlocked"
+            return 0
+        fi
+        
+        tries=$((tries - 1))
+        echo "Invalid passphrase. $tries attempts remaining."
+    done
+    
+    return 1
+}
+
+# Emergency shell
+rescue_shell() {
+    echo ""
+    echo "================================================"
+    echo "FAILED TO UNLOCK ENCRYPTED ROOTFS"
+    echo "Dropping to rescue shell..."
+    echo "================================================"
+    echo ""
+    echo "Available commands:"
+    echo "  cryptsetup luksOpen /dev/XXX $MAPPER_NAME"
+    echo "  exit (to retry boot)"
+    echo ""
+    exec /bin/sh
+}
+
+# Main
+echo ""
+echo "================================================"
+echo "Encrypted Buildroot - LUKS Unlock"
+echo "================================================"
+echo ""
+
+parse_cmdline
+
+# Config files in initramfs are fallback only (cmdline takes priority)
+[ -z "$MAPPER_NAME" ] && [ -f /etc/mappername ] && MAPPER_NAME=$(cat /etc/mappername)
+[ -z "$KEYFILE_NAME" ] && [ -f /etc/sdmkeyfile ] && KEYFILE_NAME=$(cat /etc/sdmkeyfile)
+
+echo "Root device: $ROOT_DEV"
+echo "Crypt device: $CRYPT_DEV"
+echo "Mapper name: $MAPPER_NAME"
+echo "Keyfile: ${KEYFILE_NAME:-none}"
+echo ""
+
+# If no encryption configured, continue normal boot
+if [ -z "$CRYPT_DEV" ]; then
+    echo "No encrypted device specified, continuing normal boot..."
+    exec /sbin/init "$@"
+fi
+
+# Wait for encrypted device
+RESOLVED_CRYPT=$(wait_for_device "$CRYPT_DEV" $TIMEOUT)
+[ -z "$RESOLVED_CRYPT" ] && rescue_shell
+
+echo "Encrypted device: $RESOLVED_CRYPT"
+
+# Check if already unlocked
+if [ -b "/dev/mapper/$MAPPER_NAME" ]; then
+    echo "Device already unlocked"
+else
+    # Try USB keyfile (USB key is REQUIRED - no embedded keyfile for security)
+    if [ -n "$KEYFILE_NAME" ]; then
+        try_usb_keyfile "$RESOLVED_CRYPT" "$MAPPER_NAME" "$KEYFILE_NAME" || true
+    fi
+    
+    # If still locked, prompt for passphrase (fallback if --keep-passphrase was used)
+    if [ ! -b "/dev/mapper/$MAPPER_NAME" ]; then
+        try_passphrase "$RESOLVED_CRYPT" "$MAPPER_NAME" || rescue_shell
+    fi
+fi
+
+# Verify unlock successful
+if [ ! -b "/dev/mapper/$MAPPER_NAME" ]; then
+    rescue_shell
+fi
+
+echo ""
+echo "Mounting encrypted rootfs..."
+
+# Create mount point and mount
+mkdir -p /newroot
+if mount "/dev/mapper/$MAPPER_NAME" /newroot; then
+    echo "Rootfs mounted successfully"
+else
+    echo "Failed to mount rootfs!"
+    rescue_shell
+fi
+
+# Clean up and switch root
+echo "Switching to encrypted rootfs..."
+
+# Move mounts
+mkdir -p /newroot/dev /newroot/proc /newroot/sys
+mount --move /dev /newroot/dev
+mount --move /proc /newroot/proc
+mount --move /sys /newroot/sys
+
+# Switch root
+exec switch_root /newroot /sbin/init "$@"
+
+# If we get here, something went wrong
+rescue_shell
+

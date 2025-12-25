@@ -1,0 +1,78 @@
+# Buildroot configuration for LUKS encryption
+#
+# This configuration is available in menuconfig under "External options"
+#
+
+menu "LUKS Disk Encryption"
+
+config BR2_LUKS_ENCRYPT
+	bool "Enable LUKS rootfs encryption"
+	help
+	  Enable automatic LUKS encryption of the rootfs partition
+	  during the post-image phase.
+	  
+	  When enabled, the SD card image will be encrypted with a
+	  unique keyfile that can be used with a USB key for automatic
+	  unlock at boot.
+	  
+	  Requires: cryptsetup, parted, rsync on the build host.
+
+if BR2_LUKS_ENCRYPT
+
+config BR2_LUKS_CRYPTO
+	string "Encryption algorithm"
+	default "aes"
+	help
+	  Encryption algorithm to use:
+	  - "aes" (default): AES-XTS-PLAIN64, fast on Pi5 with AES-NI
+	  - "xchacha": XChaCha20-Adiantum, faster on Pi4 and earlier
+	  
+	  For Raspberry Pi 5, use "aes" for best performance.
+	  For Raspberry Pi 4 and earlier, use "xchacha".
+
+config BR2_LUKS_KEYDIR
+	string "Keyfile storage directory"
+	default "$(BINARIES_DIR)/keys"
+	help
+	  Directory where generated keyfiles will be stored.
+	  
+	  Default: $(BINARIES_DIR)/keys (output/images/keys)
+	  
+	  IMPORTANT: Back up this directory securely!
+	  Losing the keyfile means losing access to encrypted data.
+
+config BR2_LUKS_KEYFILE
+	string "Use existing keyfile (optional)"
+	default ""
+	help
+	  Path to an existing keyfile to use instead of generating
+	  a new one. Leave empty to auto-generate a unique keyfile.
+	  
+	  The keyfile should be 256 bytes of random data.
+	  Compatible with sdm-make-luks-usb-key generated files (.lek).
+
+config BR2_LUKS_KEEP_UNENCRYPTED
+	bool "Keep original unencrypted image"
+	default n
+	help
+	  Keep a copy of the original unencrypted image alongside
+	  the encrypted one.
+	  
+	  Useful for debugging, but doubles disk space usage.
+
+config BR2_LUKS_MAPPER_NAME
+	string "Device mapper name"
+	default "cryptroot"
+	help
+	  Name for the encrypted device mapper.
+	  
+	  The decrypted rootfs will be available at:
+	  /dev/mapper/<mapper_name>
+
+endif # BR2_LUKS_ENCRYPT
+
+endmenu
+
+# Add your custom package sources here
+# source "$BR2_EXTERNAL_LUKS_PI_PATH/package/your-package/Config.in"
+

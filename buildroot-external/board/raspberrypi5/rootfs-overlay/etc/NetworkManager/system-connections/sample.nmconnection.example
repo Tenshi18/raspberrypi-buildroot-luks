@@ -1,0 +1,25 @@
+[connection]
+id=sample-wifi
+uuid=00000000-0000-0000-0000-000000000000
+type=wifi
+interface-name=wlan0
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=YOUR-WIFI-SSID
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=YOUR-WIFI-PASSWORD
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+
+# Example NetworkManager connection file
+# Copy this file to a .nmconnection file (without .example) and update with your actual WiFi credentials
+# WARNING: Do not commit .nmconnection files with real passwords!
+

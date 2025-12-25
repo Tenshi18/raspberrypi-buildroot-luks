@@ -1,0 +1,72 @@
+#!/bin/sh
+#
+# rcS - System startup script for Buildroot
+# Runs all init scripts from /etc/init.d in alphabetical order
+#
+
+# Mount essential filesystems if not already mounted
+[ ! -d /proc/self ] && mount -t proc proc /proc 2>/dev/null || true
+[ ! -d /sys/kernel ] && mount -t sysfs sysfs /sys 2>/dev/null || true
+
+# Mount /dev/pts for pseudo-terminal support
+[ ! -d /dev/pts ] && mkdir -p /dev/pts
+mountpoint -q /dev/pts || mount -t devpts devpts /dev/pts -o gid=5,mode=620 2>/dev/null || true
+
+# Mount /dev/shm for shared memory support
+[ ! -d /dev/shm ] && mkdir -p /dev/shm
+mountpoint -q /dev/shm || mount -t tmpfs tmpfs /dev/shm -o nosuid,nodev 2>/dev/null || true
+
+# Wait for udev to settle and create devices (if udev is available)
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm trigger --action=add --subsystem-match=misc 2>/dev/null || true
+    udevadm settle --timeout=5 2>/dev/null || true
+fi
+
+# Create /dev/misc directory and RTC symlink for hwclock compatibility
+# hwclock expects /dev/misc/rtc, but Linux typically provides /dev/rtc0 or /dev/rtc
+mkdir -p /dev/misc
+if [ ! -e /dev/misc/rtc ]; then
+    # Wait a bit for RTC device to appear (with timeout)
+    rtc_wait=0
+    rtc_max_wait=10
+    while [ $rtc_wait -lt $rtc_max_wait ]; do
+        if [ -c /dev/rtc0 ]; then
+            ln -sf /dev/rtc0 /dev/misc/rtc
+            break
+        elif [ -c /dev/rtc ]; then
+            ln -sf /dev/rtc /dev/misc/rtc
+            break
+        fi
+        sleep 0.5
+        rtc_wait=$((rtc_wait + 1))
+    done
+    
+    # If still no RTC device found, create symlink anyway (device may appear later)
+    if [ ! -e /dev/misc/rtc ]; then
+        if [ -c /dev/rtc0 ]; then
+            ln -sf /dev/rtc0 /dev/misc/rtc
+        elif [ -c /dev/rtc ]; then
+            ln -sf /dev/rtc /dev/misc/rtc
+        else
+            # Create symlink to /dev/rtc0 (will work when device appears)
+            ln -sf /dev/rtc0 /dev/misc/rtc
+        fi
+    fi
+fi
+
+# Set system time from RTC (if available) before chrony starts
+# This prevents chrony from rejecting sync due to time being too far off (1970)
+if command -v hwclock >/dev/null 2>&1; then
+    if [ -c /dev/misc/rtc ] || [ -c /dev/rtc0 ] || [ -c /dev/rtc ]; then
+        echo "Setting system time from RTC..."
+        hwclock -s 2>/dev/null || true
+    fi
+fi
+
+# Run all executable scripts from /etc/init.d in alphabetical order
+for script in /etc/init.d/S*; do
+    [ -f "$script" ] && [ -x "$script" ] && "$script" start
+done
+
+exit 0
+

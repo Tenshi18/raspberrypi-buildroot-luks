@@ -1,0 +1,57 @@
+# Linux kernel config fragment for QEMU virt machine support
+# This fragment adds PCI and VirtIO support for debugging encrypted images in QEMU
+# Include this in BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES for debug builds
+#
+# Usage: Add this fragment to the kernel config fragments list when building
+# for QEMU virt machine testing (not for real hardware)
+
+# =============================================================================
+# PCI Support (required for virtio-pci devices)
+# =============================================================================
+CONFIG_PCI=y
+CONFIG_PCI_HOST_GENERIC=y
+CONFIG_PCI_MSI=y
+CONFIG_PCI_MSI_IRQ_DOMAIN=y
+
+# =============================================================================
+# VirtIO Core Support
+# =============================================================================
+CONFIG_VIRTIO=y
+CONFIG_VIRTIO_PCI=y
+CONFIG_VIRTIO_MMIO=y
+CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y
+
+# =============================================================================
+# VirtIO Block Devices (for virtio-blk)
+# =============================================================================
+CONFIG_VIRTIO_BLK=y
+
+# =============================================================================
+# VirtIO SCSI (for virtio-scsi devices)
+# =============================================================================
+# Note: The correct option is CONFIG_SCSI_VIRTIO, not CONFIG_VIRTIO_SCSI
+CONFIG_SCSI_VIRTIO=y
+
+# =============================================================================
+# Additional VirtIO devices (optional, but useful for debugging)
+# =============================================================================
+CONFIG_VIRTIO_NET=y
+CONFIG_VIRTIO_CONSOLE=y
+CONFIG_VIRTIO_BALLOON=y
+CONFIG_VIRTIO_INPUT=y
+
+# =============================================================================
+# SCSI subsystem (required for virtio-scsi)
+# =============================================================================
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+
+# =============================================================================
+# USB xHCI PCI support (for USB devices in QEMU virt with PCI)
+# =============================================================================
+# Note: CONFIG_USB_XHCI_PLATFORM is already in linux-luks.fragment
+# This adds PCI-based xHCI support for QEMU virt machine
+CONFIG_USB_XHCI_PCI=y
+CONFIG_USB_SUPPORT=y
+
+

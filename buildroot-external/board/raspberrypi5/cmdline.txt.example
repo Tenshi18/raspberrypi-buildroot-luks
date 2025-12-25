@@ -1,0 +1,10 @@
+# Example cmdline.txt for Raspberry Pi 5
+# Copy this file to cmdline.txt and update with your actual values
+# WARNING: Do not commit cmdline.txt with real LUKS keyfile UUIDs!
+
+# For unencrypted rootfs:
+# root=/dev/mmcblk0p2 rootwait console=tty1 console=ttyAMA0,115200 cfg80211.ieee80211_regdom=RU
+
+# For encrypted rootfs (replace YOUR-KEYFILE-UUID with actual UUID):
+# console=serial0,115200 root=/dev/mapper/cryptroot cryptdevice=/dev/mmcblk0p2:cryptroot luks.crypttab=no luks.keyfile=YOUR-KEYFILE-UUID.lek rootwait
+

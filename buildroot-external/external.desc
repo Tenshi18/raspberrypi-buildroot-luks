@@ -1,0 +1,3 @@
+name: LUKS_PI
+desc: LUKS disk encryption for Raspberry Pi with pre-burn encryption support
+

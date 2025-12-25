@@ -1,0 +1,21 @@
+# Example file_permissions.txt for Raspberry Pi 5 (OpenRC)
+# Copy this file to file_permissions.txt and update with your actual file permissions
+# Format: path type mode uid gid major minor start follow symlinks
+
+# Init scripts
+/etc/init.d/S00cryptroot f 0700 0 0 - - - - -
+
+# OpenRC runlevels
+/etc/runlevels/default d 0755 0 0 - - - - -
+
+# NetworkManager configuration
+/etc/NetworkManager/NetworkManager.conf f 0644 0 0 - - - - -
+/etc/NetworkManager/system-connections/sample.nmconnection f 0600 0 0 - - - - -
+
+# LUKS unlock script
+/usr/bin/sdmluksunlock f 0700 0 0 - - - - -
+
+# Add your custom application permissions here:
+# /usr/local/bin/your-script f 0755 0 0 - - - - -
+# /var/log/your-app d 0755 0 0 - - - - -
+

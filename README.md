@@ -110,9 +110,9 @@ sudo dd if=encrypted/device_001.img of=/dev/sdY bs=4M status=progress
         │       │   └── custom-app.py # Пример кастомного Python-скрипта
         │       └── var/log/
         │
-        └── raspberrypizero2w-64/     # Raspberry Pi Zero 2W (использует runit)
-            ├── cmdline.txt
-            ├── file_permissions.txt
+        └── raspberrypizero2w-64/     # Raspberry Pi Zero 2W (использует OpenRC)
+            ├── cmdline.txt.example   # Пример параметров ядра (скопируйте в cmdline.txt)
+            ├── file_permissions.txt.example # Пример прав доступа (скопируйте в file_permissions.txt)
             ├── genimage.cfg
             ├── linux-luks.fragment
             ├── linux-virtio-debug.fragment  # Debug конфигурация ядра
@@ -129,13 +129,10 @@ sudo dd if=encrypted/device_001.img of=/dev/sdY bs=4M status=progress
                 │   ├── NetworkManager/
                 │   │   ├── NetworkManager.conf
                 │   │   └── system-connections/
-                │   │       └── sample.nmconnection
-                │   ├── runit/        # Конфигурация runit
-                │   │   ├── 2
-                │   │   └── sv/
-                │   │       └── custom-app/  # Пример кастомного сервиса
-                │   └── service/      # Директория сервиса runit
-                └── var/log/
+                │   │       └── sample.nmconnection.example # Пример WiFi конфигурации
+                │   ├── runlevels/
+                │   │   └── default/  # OpenRC runlevels
+                │   └── var/log/
 ```
 
 ## Интеграция с Buildroot
@@ -154,17 +151,65 @@ cd buildroot
 export BR2_EXTERNAL=/path/to/raspberrypi5-buildroot-luks/buildroot-external
 ```
 
-**2. Загрузите defconfig:**
+**2. Создайте свой defconfig:**
+
+**Важно:** Defconfig файлы не включены в репозиторий, так как могут содержать пароли и другие секреты. Вам нужно создать свой defconfig на основе базовой конфигурации Buildroot.
 
 ```bash
 # Для Raspberry Pi 5:
-make raspberrypi5_luks_defconfig
+cd /path/to/buildroot
+make raspberrypi5_defconfig
 
 # Или для Raspberry Pi Zero 2W:
-make raspberrypizero2w_64_luks_defconfig
+make raspberrypizero2w_64_defconfig
 ```
 
-**3. (Опционально) Настройте параметры шифрования:**
+**3. Настройте обязательные опции для LUKS:**
+
+После загрузки базового defconfig, обязательно включите следующие опции:
+
+```bash
+make menuconfig
+```
+
+**Обязательные опции для LUKS шифрования:**
+
+| Категория | Опция | Значение | Описание |
+|-----------|-------|----------|----------|
+| **External options → LUKS Disk Encryption** | `BR2_LUKS_ENCRYPT` | `y` | Включить LUKS шифрование |
+| | `BR2_LUKS_CRYPTO` | `aes` или `xchacha` | Алгоритм: `aes` для Pi5, `xchacha` для Pi4/Zero2W |
+| **Filesystem images → cpio the root filesystem** | `BR2_TARGET_ROOTFS_CPIO` | `y` | **КРИТИЧНО:** Initramfs для разблокировки LUKS |
+| | `BR2_TARGET_ROOTFS_CPIO_GZIP` | `y` | Сжатие initramfs |
+| **Target packages → Hardware handling → cryptsetup** | `BR2_PACKAGE_CRYPTSETUP` | `y` | Утилиты для работы с LUKS |
+| **Target packages → Hardware handling → LVM2** | `BR2_PACKAGE_LVM2` | `y` | Device mapper для LUKS |
+| | `BR2_PACKAGE_LVM2_DMSETUP` | `y` | Device mapper setup |
+| **Target packages → System tools → util-linux** | `BR2_PACKAGE_UTIL_LINUX` | `y` | Системные утилиты |
+| | `BR2_PACKAGE_UTIL_LINUX_LIBBLKID` | `y` | Библиотека для работы с блочными устройствами |
+| | `BR2_PACKAGE_UTIL_LINUX_LIBUUID` | `y` | Библиотека для работы с UUID |
+| **Target packages → Libraries → JSON-C** | `BR2_PACKAGE_JSON_C` | `y` | JSON библиотека (для cryptsetup) |
+| **System configuration → Root password** | `BR2_TARGET_GENERIC_ROOT_PASSWD` | `"ваш_пароль"` | **ИЗМЕНИТЕ** пароль root! |
+| **Root filesystem overlay directories** | `BR2_ROOTFS_OVERLAY` | `"$(BR2_EXTERNAL_LUKS_PI_PATH)/board/raspberrypi5/rootfs-overlay"` | Путь к overlay (замените на нужный board) |
+| **Custom scripts to run after generating filesystem** | `BR2_ROOTFS_POST_BUILD_SCRIPT` | `"$(BR2_EXTERNAL_LUKS_PI_PATH)/scripts/post-build.sh"` | Скрипт post-build |
+| **Custom scripts to run after creating filesystem images** | `BR2_ROOTFS_POST_IMAGE_SCRIPT` | `"$(BR2_EXTERNAL_LUKS_PI_PATH)/board/raspberrypi5/post-image.sh $(BR2_EXTERNAL_LUKS_PI_PATH)/scripts/post-image-encrypt.sh"` | Скрипты post-image (замените на нужный board) |
+
+**Дополнительные опции для Raspberry Pi:**
+
+| Категория | Опция | Значение |
+|-----------|-------|----------|
+| **Kernel → Linux Kernel → Kernel configuration** | `BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES` | `"$(BR2_EXTERNAL_LUKS_PI_PATH)/board/raspberrypi5/linux-luks.fragment"` |
+| **Bootloaders → Raspberry Pi Firmware** | `BR2_PACKAGE_RPI_FIRMWARE` | `y` |
+| | `BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI5` | `y` (для Pi5) или `BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI` (для Zero2W) |
+| **Host utilities → genimage** | `BR2_PACKAGE_HOST_GENIMAGE` | `y` |
+| **Host utilities → dosfstools** | `BR2_PACKAGE_HOST_DOSFSTOOLS` | `y` |
+
+**Пример минимального defconfig для Raspberry Pi 5:**
+
+```bash
+# Сохраните текущую конфигурацию
+make savedefconfig DEFCONFIG=raspberrypi5_luks_defconfig
+```
+
+**4. (Опционально) Настройте дополнительные параметры шифрования:**
 
 ```bash
 make menuconfig
@@ -176,7 +221,7 @@ make menuconfig
 #   (cryptroot) Device mapper name      # Имя mapper'а для расшифрованного устройства
 ```
 
-**4. Соберите:**
+**5. Соберите:**
 
 ```bash
 make
@@ -188,7 +233,7 @@ make
 make -j$(( $(nproc) / 2 ))
 ```
 
-**5. Результат:**
+**6. Результат:**
 
 ```
 output/images/
@@ -478,9 +523,8 @@ buildroot-external/
 ├── external.desc                # Описание external tree
 ├── external.mk                  # Makefile расширений
 ├── Config.in                    # Меню конфигурации
-├── configs/                     # Файлы defconfig
-│   ├── raspberrypi5_luks_defconfig
-│   └── raspberrypizero2w_64_luks_defconfig
+├── configs/                     # Defconfig файлы НЕ должны быть в репозитории (содержат пароли)
+│   └── (создайте свои defconfig локально)
 ├── scripts/                     # Общие скрипты
 │   ├── post-build.sh
 │   └── post-image-encrypt.sh
@@ -489,8 +533,8 @@ buildroot-external/
 │   └── custom-app/
 └── board/                       # Конфигурации для каждого устройства
     ├── raspberrypi5/            # Raspberry Pi 5 (OpenRC)
-    │   ├── cmdline.txt          # Параметры ядра (может содержать секреты)
-    │   ├── file_permissions.txt
+    │   ├── cmdline.txt          # НЕ в репозитории (может содержать UUID ключей LUKS)
+    │   ├── file_permissions.txt # НЕ в репозитории (создайте локально)
     │   ├── genimage.cfg
     │   ├── linux-luks.fragment
     │   ├── post-build.sh
@@ -504,9 +548,9 @@ buildroot-external/
     │       │   └── runlevels/default/
     │       └── root/            # Пользовательские скрипты
     │           └── custom-app.py
-    └── raspberrypizero2w-64/    # Raspberry Pi Zero 2W (runit)
-        ├── cmdline.txt
-        ├── file_permissions.txt
+    └── raspberrypizero2w-64/    # Raspberry Pi Zero 2W (OpenRC)
+        ├── cmdline.txt.example  # Пример (скопируйте в cmdline.txt)
+        ├── file_permissions.txt.example # Пример (скопируйте в file_permissions.txt)
         ├── genimage.cfg
         ├── linux-luks.fragment
         ├── linux-virtio-debug.fragment
@@ -514,43 +558,163 @@ buildroot-external/
         ├── post-image.sh
         └── rootfs-overlay/
             ├── etc/
-            │   ├── NetworkManager/system-connections/*.nmconnection
+            │   ├── NetworkManager/
+            │   │   └── system-connections/
+            │   │       └── sample.nmconnection.example # Пример WiFi (скопируйте в .nmconnection)
             │   ├── init.d/rcS
-            │   └── runit/       # Runit-сервисы
-            │       ├── 2
-            │       └── sv/
-            │           └── custom-app/
-            │               ├── run
-            │               ├── finish
-            │               └── log/run
+            │   ├── runlevels/
+            │   │   └── default/  # OpenRC runlevels
+            │   └── var/log/
             └── root/
 ```
 
 **Инструкции по наполнению:**
 
-1. **Скопируйте базовую структуру** из репозитория (или создайте заново)
+1. **Скопируйте базовую структуру** из репозитория
 
-2. **Добавьте секретные файлы:**
-   - `board/*/cmdline.txt` - параметры ядра (если нужны секретные параметры)
-   - `board/*/rootfs-overlay/etc/NetworkManager/system-connections/*.nmconnection` - файлы WiFi-соединений с паролями
-   - `board/*/rootfs-overlay/etc/init.d/*` - секретные init-скрипты
-   - `board/*/rootfs-overlay/root/*` - пользовательские скрипты и приложения
-   - Любые другие конфиденциальные файлы в `rootfs-overlay/`
+   В репозитории уже есть примерная структура `buildroot-external/` с примерами файлов:
+   - `cmdline.txt.example` - пример параметров ядра
+   - `file_permissions.txt.example` - пример прав доступа
+   - `sample.nmconnection.example` - пример WiFi конфигурации
 
-3. **Проверьте структуру:**
+2. **Создайте Config.in локально:**
+
+   Файл `Config.in` определяет меню конфигурации Buildroot для вашего external tree. Создайте его в корне `buildroot-external/`.
+
+   **Базовый пример Config.in:**
+   ```bash
+   # Buildroot configuration for LUKS encryption
+   #
+   # This configuration is available in menuconfig under "External options"
+   #
+   
+   menu "LUKS Disk Encryption"
+   
+   config BR2_LUKS_ENCRYPT
+   	bool "Enable LUKS rootfs encryption"
+   	help
+   	  Enable automatic LUKS encryption of the rootfs partition
+   	  during the post-image phase.
+   	  
+   	  When enabled, the SD card image will be encrypted with a
+   	  unique keyfile that can be used with a USB key for automatic
+   	  unlock at boot.
+   	  
+   	  Requires: cryptsetup, parted, rsync on the build host.
+   
+   if BR2_LUKS_ENCRYPT
+   
+   config BR2_LUKS_CRYPTO
+   	string "Encryption algorithm"
+   	default "aes"
+   	help
+   	  Encryption algorithm to use:
+   	  - "aes" (default): AES-XTS-PLAIN64, fast on Pi5 with AES-NI
+   	  - "xchacha": XChaCha20-Adiantum, faster on Pi4 and earlier
+   	  
+   	  For Raspberry Pi 5, use "aes" for best performance.
+   	  For Raspberry Pi 4 and earlier, use "xchacha".
+   
+   config BR2_LUKS_KEYDIR
+   	string "Keyfile storage directory"
+   	default "$(BINARIES_DIR)/keys"
+   	help
+   	  Directory where generated keyfiles will be stored.
+   	  
+   	  Default: $(BINARIES_DIR)/keys (output/images/keys)
+   	  
+   	  IMPORTANT: Back up this directory securely!
+   	  Losing the keyfile means losing access to encrypted data.
+   
+   config BR2_LUKS_KEYFILE
+   	string "Use existing keyfile (optional)"
+   	default ""
+   	help
+   	  Path to an existing keyfile to use instead of generating
+   	  a new one. Leave empty to auto-generate a unique keyfile.
+   	  
+   	  The keyfile should be 256 bytes of random data.
+   	  Compatible with sdm-make-luks-usb-key generated files (.lek).
+   
+   config BR2_LUKS_KEEP_UNENCRYPTED
+   	bool "Keep original unencrypted image"
+   	default n
+   	help
+   	  Keep a copy of the original unencrypted image alongside
+   	  the encrypted one.
+   	  
+   	  Useful for debugging, but doubles disk space usage.
+   
+   config BR2_LUKS_MAPPER_NAME
+   	string "Device mapper name"
+   	default "cryptroot"
+   	help
+   	  Name for the encrypted device mapper.
+   	  
+   	  The decrypted rootfs will be available at:
+   	  /dev/mapper/<mapper_name>
+   
+   endif # BR2_LUKS_ENCRYPT
+   
+   endmenu
+   
+   # Добавьте здесь source для ваших кастомных пакетов, если нужно
+   # source "$BR2_EXTERNAL_LUKS_PI_PATH/package/your-package/Config.in"
+   ```
+
+3. **Создайте секретные файлы из примеров:**
+
+   В репозитории есть примерные файлы с суффиксом `.example`. Скопируйте их и заполните реальными данными:
+
+   ```bash
+   # Скопируйте примеры и заполните реальными значениями
+   cd buildroot-external/board/raspberrypi5/
+   cp cmdline.txt.example cmdline.txt
+   cp file_permissions.txt.example file_permissions.txt
+   # Отредактируйте cmdline.txt и file_permissions.txt с вашими данными
+   
+   cd ../raspberrypizero2w-64/
+   cp cmdline.txt.example cmdline.txt
+   cp file_permissions.txt.example file_permissions.txt
+   # Отредактируйте cmdline.txt и file_permissions.txt с вашими данными
+   
+   # Для WiFi конфигураций
+   cd rootfs-overlay/etc/NetworkManager/system-connections/
+   cp sample.nmconnection.example your-wifi.nmconnection
+   # Отредактируйте your-wifi.nmconnection с вашими WiFi данными
+   ```
+
+   **Важно:** 
+   - Файлы без `.example` (cmdline.txt, file_permissions.txt, *.nmconnection) **НЕ должны быть в git**
+   - Они уже добавлены в `.gitignore`
+   - Используйте примерные файлы как шаблоны
+
+   - `board/*/rootfs-overlay/etc/init.d/*` - ваши init-скрипты
+   - `board/*/rootfs-overlay/root/*` - ваши пользовательские скрипты и приложения
+   - `board/*/rootfs-overlay/usr/local/bin/*` - ваши исполняемые файлы
+   - Любые другие файлы в `rootfs-overlay/`
+
+   **Примечание:** В `post-build.sh` есть примеры создания директорий для ваших скриптов:
+   ```bash
+   # Example: mkdir -p "${TARGET_DIR}/usr/local/bin"
+   # Example: mkdir -p "${TARGET_DIR}/var/log/your-app"
+   ```
+   Раскомментируйте и адаптируйте под ваши нужды.
+
+5. **Проверьте структуру:**
    ```bash
    # Убедитесь, что директория содержит все необходимые файлы
    ls -la buildroot-external/
    ```
 
 ```bash
-# 4. Упакуйте весь buildroot-external в архив:
+# 6. Упакуйте весь buildroot-external в архив:
 tar -czf buildroot-external.tar.gz buildroot-external/
 
-# 5. Закодируйте в base64 и добавьте в secrets:
+# 7. Закодируйте в base64 и добавьте в secrets:
 base64 -w 0 buildroot-external.tar.gz | gh secret set BUILDROOT_EXTERNAL_TAR_BASE64
 
-# 6. Запустите сборку:
+# 8. Запустите сборку:
 gh workflow run build.yml -f board=raspberrypi5
 ```
 

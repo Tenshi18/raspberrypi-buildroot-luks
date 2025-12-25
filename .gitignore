@@ -65,8 +65,10 @@ logs/
 /.config.old
 /.auto.deps
 
-# buildroot-external is stored as GitHub secret (BUILDROOT_EXTERNAL_TAR_BASE64)
-buildroot-external/
+# Build artifacts (object files and compiled binaries)
+**/*.o
+**/*.so
+**/*.a
 
 # Build artifacts
 *.zip
@@ -76,3 +78,14 @@ buildroot-external/
 *.cpio.gz
 Image
 SHA256SUMS.txt
+
+# NetworkManager connection files
+*.nmconnection
+
+# Buildroot defconfig files
+**/*_defconfig
+**/*.defconfig
+
+# Buildroot external directories with secrets
+runit-buildroot-external/
+openrc-buildroot-external/

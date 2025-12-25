@@ -1,0 +1,16 @@
+# Buildroot inittab for RPi Zero 2W with OpenRC
+# Works in QEMU and on real hardware
+
+# Set hostname from /etc/hostname (before getty)
+::sysinit:/bin/sh -c "if [ -f /etc/hostname ]; then hostname -F /etc/hostname || hostname $(cat /etc/hostname); fi"
+
+# Console login - use ttyS0 directly (mini UART on RPi Zero 2W)
+# serial0 -> ttyS0 (mini UART) is the primary UART on RPi Zero 2W
+# The symlink is created by udev or manually in init script
+# Fallback to ttyS0 directly in case serial0 symlink isn't ready yet
+::respawn:/sbin/getty -L ttyS0 115200 vt100
+
+# Shutdown handling
+::shutdown:/sbin/swapoff -a
+::shutdown:/bin/umount -a -r
+::ctrlaltdel:/sbin/reboot

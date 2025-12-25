@@ -1,0 +1,487 @@
+#!/bin/sh
+#
+# Buildroot initramfs init script with LUKS support
+# This replaces the standard init to unlock encrypted rootfs early
+#
+
+# Mount essential filesystems
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+
+# Make console work
+exec 0</dev/console
+exec 1>/dev/console
+exec 2>/dev/console
+
+# Configuration
+MAPPER_NAME="cryptroot"
+ROOT_DEV=""
+CRYPT_DEV=""
+KEYFILE_NAME=""
+TIMEOUT=60
+
+# Parse command line
+parse_cmdline() {
+    for param in $(cat /proc/cmdline); do
+        case "$param" in
+            root=*)
+                ROOT_DEV="${param#root=}"
+                ;;
+            cryptdevice=*)
+                val="${param#cryptdevice=}"
+                CRYPT_DEV="${val%%:*}"
+                MAPPER_NAME="${val#*:}"
+                ;;
+            luks.keyfile=*)
+                KEYFILE_NAME="${param#luks.keyfile=}"
+                ;;
+        esac
+    done
+}
+
+# Find LUKS partition on available devices
+# Returns device path on stdout, debug messages go to stderr
+find_luks_partition() {
+    echo "Looking for LUKS partition on available devices..." >&2
+
+    # Wait a bit for all devices to be detected
+    sleep 2
+
+    # Scan all possible block devices for LUKS
+    for dev in /dev/sd*[0-9] /dev/vd*[0-9] /dev/mmcblk*p[0-9]; do
+        [ -b "$dev" ] || continue
+        echo "Checking $dev for LUKS..." >&2
+        if cryptsetup isLuks "$dev" 2>/dev/null; then
+            echo "Found LUKS partition: $dev" >&2
+            # Return ONLY the device path on stdout
+            echo "$dev"
+            return 0
+        fi
+    done
+
+    echo "No LUKS partition found" >&2
+    return 1
+}
+
+# Wait for device to appear
+wait_for_device() {
+    wfd_dev="$1"
+    wfd_timeout="$2"
+    wfd_count=0
+
+    echo "Waiting for device: $wfd_dev" >&2
+
+    while [ $wfd_count -lt $wfd_timeout ]; do
+        # If waiting for a partition and we didn't auto-find LUKS, try to trigger partition scanning
+        if echo "$wfd_dev" | grep -qE "^/dev/(sd[a-z]|vd[a-z]|mmcblk[0-9]+p)[0-9]+$" && [ "$AUTO_FOUND_LUKS" != "yes" ]; then
+            # Extract disk from partition (handle sda1 -> sda, vda1 -> vda, mmcblk0p1 -> mmcblk0)
+            wfd_disk=$(echo "$wfd_dev" | sed -E 's/(\/dev\/sd[a-z])[0-9]+$/\1/; s/(\/dev\/vd[a-z])[0-9]+$/\1/; s/(\/dev\/mmcblk[0-9]+)p[0-9]+$/\1/')
+            if [ -b "$wfd_disk" ]; then
+                # Disk exists, try to scan for partitions
+                echo "Scanning for partitions on $wfd_disk..." >&2
+                partprobe "$wfd_disk" 2>/dev/null || true
+                udevadm trigger --action=add --subsystem-match=block 2>/dev/null || true
+                udevadm settle --timeout=2 2>/dev/null || true
+                sleep 1
+            fi
+        fi
+
+        # Resolve PARTUUID
+        if echo "$wfd_dev" | grep -q "^PARTUUID="; then
+            wfd_uuid="${wfd_dev#PARTUUID=}"
+            wfd_resolved=$(blkid -t PARTUUID="$wfd_uuid" -o device 2>/dev/null)
+            [ -b "$wfd_resolved" ] && echo "$wfd_resolved" && return 0
+        elif [ -b "$wfd_dev" ]; then
+            echo "$wfd_dev"
+            return 0
+        fi
+
+        sleep 1
+        wfd_count=$((wfd_count + 1))
+        [ $((wfd_count % 10)) -eq 0 ] && echo "Still waiting... ($wfd_count/$wfd_timeout)" >&2
+    done
+
+    return 1
+}
+
+# Try to unlock with USB keyfile
+# POSIX-compatible version for BusyBox sh
+try_usb_keyfile() {
+    crypt_dev="$1"
+    mapper="$2"
+    keyfile="$3"
+    timeout=30
+    count=0
+
+    echo ""
+    echo "Looking for USB disk with keyfile: $keyfile"
+    echo "Insert USB key disk now..."
+    echo ""
+
+    mkdir -p /mnt
+
+    while [ $count -lt $timeout ]; do
+        # Method 1: Try stable device names (if udev created them)
+        for usbpartition in /dev/disk/by-id/usb-*-part1; do
+            [ -e "$usbpartition" ] || continue
+
+            # Get the actual device path
+            usbdevice=$(readlink -f "$usbpartition")
+            [ -z "$usbdevice" ] && continue
+            [ -b "$usbdevice" ] || continue
+
+            if mount -t vfat "$usbdevice" /mnt 2>/dev/null; then
+                echo "Mounted USB disk $usbdevice"
+                if [ -f "/mnt/$keyfile" ]; then
+                    echo "Found keyfile '$keyfile' on $usbdevice"
+                    echo "Keyfile size: $(stat -c%s "/mnt/$keyfile" 2>/dev/null || ls -l "/mnt/$keyfile") bytes"
+                    echo "Attempting cryptsetup luksOpen on $crypt_dev..."
+                    echo "Command: cryptsetup luksOpen $crypt_dev $mapper --key-file /mnt/$keyfile --debug"
+                    
+                    if cryptsetup luksOpen "$crypt_dev" "$mapper" --key-file "/mnt/$keyfile"; then
+                        echo "SUCCESS: Rootfs unlocked with USB keyfile"
+                        umount /mnt
+                        return 0
+                    fi
+
+                    echo "cryptsetup exit code: $?"
+                    echo "Failed to unlock with this keyfile"
+                else
+                    echo "Keyfile '$keyfile' not found on this disk"
+                fi
+                umount /mnt 2>/dev/null
+            fi
+        done
+
+        # Method 2: Fallback to scanning /dev/sd*1 directly (for systems without udev symlinks)
+        # This is useful when udev symlinks don't exist (minimal initramfs)
+        
+        # Extract the disk device from the LUKS partition (to skip it)
+        # Handle both /dev/sda2 -> /dev/sda and /dev/mmcblk0p2 -> /dev/mmcblk0
+        luks_disk=$(echo "$crypt_dev" | sed -E 's/(\/dev\/sd[a-z])[0-9]+$/\1/; s/(\/dev\/mmcblk[0-9]+)p[0-9]+$/\1/')
+        
+        for usbdevice in /dev/sd[a-z]1; do
+            [ -b "$usbdevice" ] || continue
+            
+            # Skip if it's the same disk as our LUKS partition
+            usb_disk="${usbdevice%[0-9]*}"
+            [ "$luks_disk" = "$usb_disk" ] && continue
+
+            if mount -t vfat "$usbdevice" /mnt 2>/dev/null; then
+                echo "Mounted disk $usbdevice"
+                if [ -f "/mnt/$keyfile" ]; then
+                    echo "Found keyfile '$keyfile' on $usbdevice"
+                    echo "Keyfile size: $(stat -c%s "/mnt/$keyfile" 2>/dev/null || ls -l "/mnt/$keyfile") bytes"
+                    echo "Attempting cryptsetup luksOpen on $crypt_dev..."
+                    
+                    if cryptsetup luksOpen "$crypt_dev" "$mapper" --key-file "/mnt/$keyfile"; then
+                        echo "SUCCESS: Rootfs unlocked with USB keyfile"
+                        umount /mnt
+                        return 0
+                    fi
+
+                    echo "cryptsetup exit code: $?"
+                    echo "Failed to unlock with this keyfile"
+                else
+                    echo "Keyfile '$keyfile' not found on this disk"
+                fi
+                umount /mnt 2>/dev/null
+            fi
+        done
+
+        sleep 1
+        count=$((count + 1))
+        [ $((count % 5)) -eq 0 ] && echo "Waiting for USB key... ($count/$timeout)"
+    done
+
+    echo "Timeout waiting for USB keyfile"
+    return 1
+}
+
+# Prompt for passphrase
+try_passphrase() {
+    pp_crypt_dev="$1"
+    pp_mapper="$2"
+    pp_tries=3
+    
+    while [ $pp_tries -gt 0 ]; do
+        echo ""
+        echo "Enter passphrase for $pp_crypt_dev:"
+        
+        # Read passphrase (no echo)
+        stty -echo
+        read pp_passphrase
+        stty echo
+        echo ""
+        
+        if echo "$pp_passphrase" | cryptsetup luksOpen "$pp_crypt_dev" "$pp_mapper" --key-file=-; then
+            echo "SUCCESS: Rootfs unlocked"
+            return 0
+        fi
+        
+        pp_tries=$((pp_tries - 1))
+        echo "Invalid passphrase. $pp_tries attempts remaining."
+    done
+    
+    return 1
+}
+
+# Emergency shell
+rescue_shell() {
+    echo ""
+    echo "=================================="
+    echo "FAILED TO UNLOCK ENCRYPTED ROOTFS"
+    echo "Dropping to rescue shell..."
+    echo "=================================="
+    echo ""
+    echo "Available commands:"
+    echo "  cryptsetup luksOpen /dev/XXX $MAPPER_NAME"
+    echo "  exit (to retry boot)"
+    echo ""
+    exec /bin/sh
+}
+
+# Main
+echo ""
+echo "==================="
+echo "Encrypted Buildroot"
+echo "==================="
+echo ""
+
+parse_cmdline
+
+# Config files in initramfs are fallback only (cmdline takes priority)
+[ -z "$MAPPER_NAME" ] && [ -f /etc/mappername ] && MAPPER_NAME=$(cat /etc/mappername)
+[ -z "$KEYFILE_NAME" ] && [ -f /etc/sdmkeyfile ] && KEYFILE_NAME=$(cat /etc/sdmkeyfile)
+
+echo "Root device: $ROOT_DEV"
+echo "Crypt device: $CRYPT_DEV"
+echo "Mapper name: $MAPPER_NAME"
+echo "Keyfile: ${KEYFILE_NAME:-none}"
+echo ""
+
+# If no encryption configured, continue normal boot
+if [ -z "$CRYPT_DEV" ]; then
+    echo "No encrypted device specified, continuing normal boot..."
+    exec /sbin/init "$@"
+fi
+
+# Wait for encrypted device
+# For fixed device paths (like /dev/sda2 or /dev/mmcblk0p2), try to find the actual LUKS partition
+# since device order in QEMU virt can be non-deterministic
+AUTO_FOUND_LUKS=""
+
+# Check if CRYPT_DEV is a PARTUUID (most reliable) or a fixed device path
+if echo "$CRYPT_DEV" | grep -q "^PARTUUID="; then
+    # PARTUUID is the most reliable - wait for it to appear
+    echo "Using PARTUUID for encrypted device..."
+    RESOLVED_CRYPT=$(wait_for_device "$CRYPT_DEV" $TIMEOUT)
+    [ -z "$RESOLVED_CRYPT" ] && rescue_shell
+    echo "Encrypted device: $RESOLVED_CRYPT"
+elif echo "$CRYPT_DEV" | grep -qE "^/dev/(sd[a-z]|vd[a-z]|mmcblk[0-9]+p)[0-9]+$"; then
+    echo "Fixed device path detected: $CRYPT_DEV"
+    echo "Trying to find LUKS partition automatically..."
+    
+    # Wait a bit for devices to appear
+    sleep 3
+    
+    # Try to find LUKS partition (stderr shows debug, stdout has device path)
+    FOUND_LUKS=$(find_luks_partition)
+    
+    if [ -n "$FOUND_LUKS" ] && [ -b "$FOUND_LUKS" ]; then
+        echo "Using found LUKS partition: $FOUND_LUKS"
+        CRYPT_DEV="$FOUND_LUKS"
+        AUTO_FOUND_LUKS="yes"
+        RESOLVED_CRYPT="$CRYPT_DEV"
+        echo "Encrypted device: $RESOLVED_CRYPT"
+    else
+        echo "Auto-detection failed, using original path: $CRYPT_DEV"
+        RESOLVED_CRYPT=$(wait_for_device "$CRYPT_DEV" $TIMEOUT)
+        [ -z "$RESOLVED_CRYPT" ] && rescue_shell
+        echo "Encrypted device: $RESOLVED_CRYPT"
+    fi
+else
+    RESOLVED_CRYPT=$(wait_for_device "$CRYPT_DEV" $TIMEOUT)
+    [ -z "$RESOLVED_CRYPT" ] && rescue_shell
+    echo "Encrypted device: $RESOLVED_CRYPT"
+fi
+
+# Additional wait for partitions to be fully created
+if echo "$RESOLVED_CRYPT" | grep -qE "^/dev/(sd[a-z]|vd[a-z]|mmcblk[0-9]+p)[0-9]+$"; then
+    echo "Ensuring partitions are ready..."
+    # Extract disk from partition path
+    disk=$(echo "$RESOLVED_CRYPT" | sed -E 's/(\/dev\/sd[a-z])[0-9]+$/\1/; s/(\/dev\/vd[a-z])[0-9]+$/\1/; s/(\/dev\/mmcblk[0-9]+)p[0-9]+$/\1/')
+    partprobe "$disk" 2>/dev/null || true
+    udevadm trigger --action=add --subsystem-match=block 2>/dev/null || true
+    udevadm settle --timeout=3 2>/dev/null || true
+    sleep 2
+
+    # Final check that the partition is accessible
+    if [ ! -b "$RESOLVED_CRYPT" ]; then
+        echo "ERROR: Partition $RESOLVED_CRYPT not accessible after scanning"
+        rescue_shell
+    fi
+    echo "Partition confirmed: $RESOLVED_CRYPT"
+fi
+
+# Check if already unlocked
+if [ -b "/dev/mapper/$MAPPER_NAME" ]; then
+    echo "Device already unlocked"
+else
+    # Try USB keyfile (USB key is REQUIRED - no embedded keyfile for security)
+    if [ -n "$KEYFILE_NAME" ]; then
+        try_usb_keyfile "$RESOLVED_CRYPT" "$MAPPER_NAME" "$KEYFILE_NAME" || true
+    fi
+    
+    # If still locked, prompt for passphrase (fallback if --keep-passphrase was used)
+    if [ ! -b "/dev/mapper/$MAPPER_NAME" ]; then
+        try_passphrase "$RESOLVED_CRYPT" "$MAPPER_NAME" || rescue_shell
+    fi
+fi
+
+# Verify unlock successful
+if [ ! -b "/dev/mapper/$MAPPER_NAME" ]; then
+    rescue_shell
+fi
+
+echo ""
+echo "Mounting encrypted rootfs..."
+
+# Create mount point and mount
+mkdir -p /newroot
+if mount "/dev/mapper/$MAPPER_NAME" /newroot; then
+    echo "Rootfs mounted successfully"
+else
+    echo "Failed to mount rootfs!"
+    rescue_shell
+fi
+
+# Clean up and switch root
+echo "Switching to encrypted rootfs..."
+
+# Move mounts
+mkdir -p /newroot/dev /newroot/proc /newroot/sys
+mount --move /dev /newroot/dev
+mount --move /proc /newroot/proc
+mount --move /sys /newroot/sys
+
+# CRITICAL: Ensure console exists after moving /dev
+# After mount --move, devtmpfs may need to be re-mounted or console recreated
+if [ ! -c /newroot/dev/console ]; then
+    echo "Creating /dev/console..."
+    mknod /newroot/dev/console c 5 1
+    chmod 600 /newroot/dev/console
+fi
+
+# Ensure serial console devices exist
+# serial0 should be created by udev, but ensure it exists
+if [ ! -c /newroot/dev/ttyS0 ]; then
+    mknod /newroot/dev/ttyS0 c 4 64 2>/dev/null || true
+fi
+if [ ! -c /newroot/dev/ttyAMA0 ]; then
+    mknod /newroot/dev/ttyAMA0 c 204 64 2>/dev/null || true
+fi
+# serial0 symlink (created by udev, but ensure it exists)
+if [ ! -e /newroot/dev/serial0 ]; then
+    # On RPi Zero 2W, serial0 usually points to ttyS0 (mini UART)
+    ln -sf ttyS0 /newroot/dev/serial0 2>/dev/null || true
+fi
+
+# Re-mount devtmpfs to ensure all devices are available
+# This is critical for proper device access after switch_root
+mount -t devtmpfs devtmpfs /newroot/dev 2>/dev/null || true
+
+# CRITICAL: Ensure console is properly set up before switch_root
+# After switch_root, /dev/console must be available for init
+if [ ! -c /newroot/dev/console ]; then
+    echo "WARNING: /dev/console missing, recreating..."
+    mknod /newroot/dev/console c 5 1
+    chmod 600 /newroot/dev/console
+fi
+
+# Ensure serial devices exist and are accessible
+if [ ! -c /newroot/dev/ttyS0 ]; then
+    mknod /newroot/dev/ttyS0 c 4 64 2>/dev/null || true
+    chmod 666 /newroot/dev/ttyS0 2>/dev/null || true
+fi
+if [ ! -c /newroot/dev/ttyAMA0 ]; then
+    mknod /newroot/dev/ttyAMA0 c 204 64 2>/dev/null || true
+    chmod 666 /newroot/dev/ttyAMA0 2>/dev/null || true
+fi
+if [ ! -c /newroot/dev/ttyAMA1 ]; then
+    mknod /newroot/dev/ttyAMA1 c 204 65 2>/dev/null || true
+    chmod 666 /newroot/dev/ttyAMA1 2>/dev/null || true
+fi
+
+# Ensure serial0 symlink exists (may point to ttyS0 or ttyAMA1 depending on config)
+if [ ! -e /newroot/dev/serial0 ]; then
+    # Try ttyS0 first (mini UART, most common on Zero 2W)
+    if [ -c /newroot/dev/ttyS0 ]; then
+        ln -sf ttyS0 /newroot/dev/serial0 2>/dev/null || true
+    elif [ -c /newroot/dev/ttyAMA1 ]; then
+        # Fallback to ttyAMA1 if ttyS0 doesn't exist
+        ln -sf ttyAMA1 /newroot/dev/serial0 2>/dev/null || true
+    fi
+fi
+
+# Verify /sbin/init exists and is executable
+if [ ! -x /newroot/sbin/init ]; then
+    echo "ERROR: /sbin/init not found or not executable!"
+    echo "Contents of /newroot/sbin:"
+    ls -la /newroot/sbin/ 2>/dev/null || echo "Directory not found"
+    echo "Contents of /newroot/bin:"
+    ls -la /newroot/bin/ | head -10
+    rescue_shell
+fi
+
+# OpenRC doesn't use inittab, so no need to check for it
+
+# Debug: Show device setup
+echo "Console devices before switch_root:"
+ls -la /newroot/dev/console /newroot/dev/ttyS* /newroot/dev/ttyAMA* /newroot/dev/serial* 2>/dev/null | head -10
+
+# CRITICAL: Ensure /dev/console is accessible and writable
+# Test console before switch_root
+if ! echo "Testing console before switch_root..." > /newroot/dev/console 2>/dev/null; then
+    echo "WARNING: Cannot write to /newroot/dev/console, trying to fix..."
+    # Try to recreate console
+    rm -f /newroot/dev/console
+    mknod /newroot/dev/console c 5 1
+    chmod 600 /newroot/dev/console
+    # Try ttyS0 as fallback console
+    if [ -c /newroot/dev/ttyS0 ]; then
+        echo "Using ttyS0 as console fallback..."
+        ln -sf /dev/ttyS0 /newroot/dev/console 2>/dev/null || true
+    fi
+fi
+
+echo "About to exec switch_root..."
+echo "Final check: /sbin/init exists: $([ -x /newroot/sbin/init ] && echo 'YES' || echo 'NO')"
+echo "Final check: /dev/console exists: $([ -c /newroot/dev/console ] && echo 'YES' || echo 'NO')"
+
+# CRITICAL: Before switch_root, ensure we can write to console
+# After switch_root, the console must be available for init
+echo "Flushing console output before switch_root..."
+sync
+
+# Debug: Test if we can access /newroot/sbin/init
+if [ -x /newroot/sbin/init ]; then
+    echo "DEBUG: /sbin/init is executable, proceeding with switch_root"
+else
+    echo "ERROR: /sbin/init is NOT executable!"
+    rescue_shell
+fi
+
+# Switch root - ensure console is available
+# switch_root will make /newroot the new root and exec /sbin/init
+# After switch_root, /dev/console should still work because we moved /dev
+# But we need to ensure init can access it
+echo "Executing switch_root now..."
+exec switch_root /newroot /sbin/init "$@"
+
+# If we get here, something went wrong
+rescue_shell
+
