@@ -62,7 +62,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check if build should run
+        id: check_build
+        run: |
+          INIT_SYSTEM="${{ github.event.inputs.init_system }}"
+          MATRIX_INIT="${{ matrix.init_system }}"
+          
+          # Use default 'both' if not set, empty, or null
+          if [ -z "$INIT_SYSTEM" ] || [ "$INIT_SYSTEM" = "null" ] || [ "$INIT_SYSTEM" = "" ]; then
+            INIT_SYSTEM="both"
+          fi
+          
+          echo "Input init_system: '$INIT_SYSTEM'"
+          echo "Matrix init_system: '$MATRIX_INIT'"
+          
+          # Determine if this matrix combination should build
+          SHOULD_BUILD="false"
+          if [ "$INIT_SYSTEM" = "both" ]; then
+            SHOULD_BUILD="true"
+            echo "✓ Building $MATRIX_INIT (init_system=both, building all)"
+          elif [ "$INIT_SYSTEM" = "$MATRIX_INIT" ]; then
+            SHOULD_BUILD="true"
+            echo "✓ Building $MATRIX_INIT (init_system=$INIT_SYSTEM matches)"
+          else
+            SHOULD_BUILD="false"
+            echo "⊘ Skipping $MATRIX_INIT (init_system=$INIT_SYSTEM, matrix=$MATRIX_INIT)"
+          fi
+          
+          echo "should_build=$SHOULD_BUILD" >> $GITHUB_OUTPUT
+          echo "Final decision: should_build=$SHOULD_BUILD"
+
       - name: Check Mega credentials
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           if [ -z "${{ secrets.MEGA_USER }}" ]; then
             echo "::error::Mega credentials not configured!"
