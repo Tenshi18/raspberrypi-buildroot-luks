@@ -49,11 +49,25 @@ jobs:
       HAS_BUILDROOT_EXTERNAL: ${{ secrets.BUILDROOT_EXTERNAL_TAR_BASE64 != '' }}
       HAS_BOARD_OVERLAY: ${{ secrets.BOARD_OVERLAY_TAR_BASE64 != '' }}
       HAS_LUKS_KEYFILE: ${{ secrets.LUKS_KEYFILE_BASE64 != '' }}
-      HAS_GDRIVE_CREDS: ${{ secrets.GDRIVE_CREDENTIALS != '' }}
+      HAS_MEGA_CREDS: ${{ secrets.MEGA_USER != '' && secrets.MEGA_PASS != '' }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Check Mega credentials
+        run: |
+          if [ -z "${{ secrets.MEGA_USER }}" ]; then
+            echo "::error::Mega credentials not configured!"
+            echo "::error::MEGA_USER secret is required. Please configure it in repository settings."
+            exit 1
+          fi
+          if [ -z "${{ secrets.MEGA_PASS }}" ]; then
+            echo "::error::Mega password not configured!"
+            echo "::error::MEGA_PASS secret is required. Please configure it in repository settings."
+            exit 1
+          fi
+          echo "✓ Mega credentials configured"
 
       - name: Extract buildroot-external from secret
         if: ${{ env.HAS_BUILDROOT_EXTERNAL == 'true' }}
@@ -350,56 +364,64 @@ jobs:
           cd ${{ github.workspace }}/artifacts
           sha256sum *.img.xz > SHA256SUMS.txt 2>/dev/null || true
 
-      - name: Upload to Google Drive
-        if: ${{ env.HAS_GDRIVE_CREDS == 'true' }}
+      - name: Upload to Mega
+        id: upload_mega
+        continue-on-error: true
         env:
-          GDRIVE_CREDENTIALS: ${{ secrets.GDRIVE_CREDENTIALS }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          MEGA_USER: ${{ secrets.MEGA_USER }}
+          MEGA_PASS: ${{ secrets.MEGA_PASS }}
+          MEGA_FOLDER_ID: ${{ secrets.MEGA_FOLDER_ID }}
         run: |
+          set -e
+          
           # Install rclone
           curl -sSL https://rclone.org/install.sh | sudo bash
           
-          # Configure rclone with service account
+          # Configure rclone for Mega
           mkdir -p ~/.config/rclone
-          echo "$GDRIVE_CREDENTIALS" > /tmp/gdrive-sa.json
-          
           cat > ~/.config/rclone/rclone.conf << EOF
-          [gdrive]
-          type = drive
-          scope = drive
-          service_account_file = /tmp/gdrive-sa.json
-          root_folder_id = ${GDRIVE_FOLDER_ID:-root}
+          [mega]
+          type = mega
+          user = ${MEGA_USER}
+          pass = ${MEGA_PASS}
           EOF
           
           # Create folder structure: builds/<board>-<date>-<run_id>/
           BUILD_FOLDER="builds/${{ env.TARGET_BOARD }}-$(date +%Y-%m-%d)-${{ github.run_id }}"
+          FULL_PATH="${MEGA_FOLDER_ID:-/}${BUILD_FOLDER}"
+          
+          # Create remote directories if not exist
+          rclone mkdir "mega:${FULL_PATH}/images/" || true
+          rclone mkdir "mega:${FULL_PATH}/keys/" || true
+          
+          UPLOAD_FAILED=0
           
           # Upload encrypted image(s)
           if [ -f "artifacts/sdcard-encrypted.img.xz" ]; then
-            echo "Uploading encrypted image to Google Drive..."
-            rclone copy artifacts/sdcard-encrypted.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
+            echo "Uploading encrypted image to Mega..."
+            rclone copy artifacts/sdcard-encrypted.img.xz "mega:${FULL_PATH}/images/" --progress || UPLOAD_FAILED=1
           fi
           if [ -f "artifacts/sdcard-encrypted-debug-virtio.img.xz" ]; then
-            echo "Uploading debug encrypted image to Google Drive..."
-            rclone copy artifacts/sdcard-encrypted-debug-virtio.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
+            echo "Uploading debug encrypted image to Mega..."
+            rclone copy artifacts/sdcard-encrypted-debug-virtio.img.xz "mega:${FULL_PATH}/images/" --progress || UPLOAD_FAILED=1
           fi
           if [ -f "artifacts/sdcard-debug-virtio.img.xz" ]; then
-            echo "Uploading debug unencrypted image to Google Drive..."
-            rclone copy artifacts/sdcard-debug-virtio.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
+            echo "Uploading debug unencrypted image to Mega..."
+            rclone copy artifacts/sdcard-debug-virtio.img.xz "mega:${FULL_PATH}/images/" --progress || UPLOAD_FAILED=1
           fi
           if [ -f "artifacts/SHA256SUMS.txt" ]; then
-            rclone copy artifacts/SHA256SUMS.txt "gdrive:${BUILD_FOLDER}/images/" --progress
+            rclone copy artifacts/SHA256SUMS.txt "mega:${FULL_PATH}/images/" --progress || UPLOAD_FAILED=1
           fi
           
           # Upload keyfiles (only if auto-generated)
           if [ "$SKIP_KEYFILE_UPLOAD" != "true" ] && [ -d "artifacts-keys/keys" ]; then
-            echo "Uploading keyfiles to Google Drive..."
-            rclone copy artifacts-keys/keys/ "gdrive:${BUILD_FOLDER}/keys/" --progress
+            echo "Uploading keyfiles to Mega..."
+            rclone copy artifacts-keys/keys/ "mega:${FULL_PATH}/keys/" --progress || UPLOAD_FAILED=1
           fi
           
           # Upload encryption info
           if [ -f "artifacts/encryption-info.txt" ]; then
-            rclone copy artifacts/encryption-info.txt "gdrive:${BUILD_FOLDER}/" --progress
+            rclone copy artifacts/encryption-info.txt "mega:${FULL_PATH}/" --progress || UPLOAD_FAILED=1
           fi
           
           # Create manifest
@@ -418,19 +440,34 @@ jobs:
           Files:
           $(ls -la artifacts/ 2>/dev/null || echo "No artifacts")
           EOF
-          rclone copy /tmp/build-info.txt "gdrive:${BUILD_FOLDER}/" --progress
+          rclone copy /tmp/build-info.txt "mega:${FULL_PATH}/" --progress || UPLOAD_FAILED=1
           
-          echo "Uploaded to Google Drive: ${BUILD_FOLDER}"
-          
-          # Cleanup credentials
-          rm -f /tmp/gdrive-sa.json
-          
-      - name: Warn if Google Drive not configured
-        if: ${{ env.HAS_GDRIVE_CREDS == 'false' }}
-        run: |
-          echo "::warning::Google Drive credentials not configured. Artifacts will not be uploaded."
-          echo "::warning::Configure GDRIVE_CREDENTIALS and GDRIVE_FOLDER_ID secrets to enable uploads."
-          echo "::warning::Images and keyfiles are available in the runner workspace but will be deleted after job completion."
+          if [ $UPLOAD_FAILED -eq 0 ]; then
+            echo "Uploaded to Mega: ${FULL_PATH}"
+            echo "mega_upload_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Failed to upload to Mega"
+            echo "mega_upload_success=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      - name: Upload artifacts to GitHub (fallback)
+        if: steps.upload_mega.outcome == 'failure' || env.HAS_MEGA_CREDS == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ format('{0}{1}-luks-images', env.TARGET_BOARD, env.BUILD_DEBUG == 'true' && '-debug-virtio' || '') }}
+          path: artifacts/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload keyfiles to GitHub (fallback)
+        if: steps.upload_mega.outcome == 'failure' || env.HAS_MEGA_CREDS == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TARGET_BOARD }}-luks-keys
+          path: artifacts-keys/
+          retention-days: 7
+          if-no-files-found: warn
 
   # Optional: Create release on tag
   release:
