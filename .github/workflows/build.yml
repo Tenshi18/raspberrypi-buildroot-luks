@@ -11,6 +11,15 @@ on:
         options:
           - raspberrypi5
           - raspberrypizero2w-64
+      init_system:
+        description: 'Init system to build'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - runit
+          - openrc
+          - both
       buildroot_version:
         description: 'Buildroot version'
         required: false
