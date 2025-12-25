@@ -47,11 +47,12 @@ jobs:
           - init_system: runit
             secret_name: BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64
             build_suffix: runit
-            should_build: ${{ github.event.inputs.init_system == 'both' || github.event.inputs.init_system == 'runit' }}
           - init_system: openrc
             secret_name: BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64
             build_suffix: openrc
-            should_build: ${{ github.event.inputs.init_system == 'both' || github.event.inputs.init_system == 'openrc' }}
+    if: |
+      github.event.inputs.init_system == 'both' ||
+      github.event.inputs.init_system == matrix.init_system
     runs-on: ubuntu-24.04
     timeout-minutes: 300  # 5 часов максимум
     outputs:
@@ -65,7 +66,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check Mega credentials
-        if: matrix.should_build == 'true'
         run: |
           if [ -z "${{ secrets.MEGA_USER }}" ]; then
             echo "::error::Mega credentials not configured!"
@@ -80,7 +80,7 @@ jobs:
           echo "✓ Mega credentials configured"
 
       - name: Extract buildroot-external from secret
-        if: ${{ matrix.should_build == 'true' && env.HAS_BUILDROOT_EXTERNAL == 'true' }}
+        if: ${{ env.HAS_BUILDROOT_EXTERNAL == 'true' }}
         env:
           BUILDROOT_EXTERNAL_TAR_BASE64: ${{ secrets[matrix.secret_name] }}
         run: |
@@ -101,7 +101,6 @@ jobs:
           chmod +x buildroot-external/board/*/post-image.sh 2>/dev/null || true
 
       - name: Free up disk space
-        if: matrix.should_build == 'true'
         run: |
           echo "=== Before cleanup ==="
           df -h
@@ -117,7 +116,6 @@ jobs:
           df -h
 
       - name: Install dependencies
-        if: matrix.should_build == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -140,7 +138,6 @@ jobs:
             e2fsprogs
 
       - name: Cache Buildroot downloads
-        if: matrix.should_build == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.BR2_DL_DIR }}
@@ -152,7 +149,6 @@ jobs:
             buildroot-dl-
 
       - name: Cache ccache
-        if: matrix.should_build == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.BR2_CCACHE_DIR }}
@@ -164,14 +160,12 @@ jobs:
             buildroot-ccache-
 
       - name: Download and extract Buildroot
-        if: matrix.should_build == 'true'
         run: |
           wget -q "https://buildroot.org/downloads/buildroot-${BUILDROOT_VERSION}.tar.xz"
           tar -xf "buildroot-${BUILDROOT_VERSION}.tar.xz"
           mv "buildroot-${BUILDROOT_VERSION}" buildroot
 
       - name: Configure Buildroot
-        if: matrix.should_build == 'true'
         run: |
           cd buildroot
           
@@ -234,7 +228,6 @@ jobs:
           make olddefconfig
 
       - name: Build image
-        if: matrix.should_build == 'true'
         run: |
           cd buildroot
           export BR2_EXTERNAL="${{ github.workspace }}/buildroot-external"
@@ -243,7 +236,6 @@ jobs:
           make -j$(nproc)
 
       - name: Prepare artifacts
-        if: matrix.should_build == 'true'
         run: |
           mkdir -p artifacts
           cd buildroot/output/images
@@ -263,7 +255,6 @@ jobs:
           sha256sum *.img.xz > SHA256SUMS.txt 2>/dev/null || true
 
       - name: Upload to Mega
-        if: matrix.should_build == 'true'
         id: upload_mega
         continue-on-error: true
         env:
