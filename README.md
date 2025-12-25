@@ -261,33 +261,6 @@ sudo /path/to/pre-burn-encrypt.sh \
     output/images/sdcard-encrypted.img
 ```
 
-### Процесс сборки Buildroot
-
-```mermaid
-flowchart TD
-    subgraph Buildroot
-        A[make] --> B[Compile packages]
-        B --> C[Create rootfs.ext4]
-        C --> D[scripts/post-build.sh<br/>General pre-image setup]
-        D --> E[board/*/post-build.sh<br/>Board-specific setup]
-        E --> F[Create sdcard.img]
-        F --> G[board/*/post-image.sh<br/>Raspberry Pi setup]
-    end
-    
-    subgraph "LUKS Encryption"
-        G --> H[scripts/post-image-encrypt.sh]
-        H --> I{BR2_LUKS_ENCRYPT=y?}
-        I -->|No| Done[sdcard.img<br/>unencrypted]
-        I -->|Yes| J[Generate keyfile]
-        J --> K[Encrypt rootfs]
-        K --> L[sdcard.img<br/>encrypted]
-        L --> M[Save keyfile<br/>to keys/]
-    end
-    
-    style L fill:#c8e6c9,color:#000
-    style M fill:#fff9c4,color:#000
-```
-
 ### Опции Config.in
 
 | Опция | Описание | Default |
@@ -298,57 +271,6 @@ flowchart TD
 | `BR2_LUKS_KEYFILE` | Использовать существующий ключ | (пусто) |
 | `BR2_LUKS_KEEP_UNENCRYPTED` | Сохранить незашифрованную копию | n |
 | `BR2_LUKS_MAPPER_NAME` | Имя device mapper | cryptroot |
-
-## Как это работает
-
-### Процесс шифрования (pre-burn-encrypt.sh)
-
-```mermaid
-flowchart TD
-    A[Input .img<br/>unencrypted] --> B[Mount via loop device]
-    B --> C[Backup rootfs<br/>to temp directory]
-    C --> D[Create LUKS2 container<br/>with keyfile]
-    D --> E[Restore rootfs<br/>to encrypted container]
-    E --> F[Update boot configuration<br/>cmdline.txt, crypttab, fstab]
-    F --> G[Output .img<br/>encrypted]
-    
-    style A fill:#e1f5ff,color:#000
-    style G fill:#c8e6c9,color:#000
-    style D fill:#fff9c4,color:#000
-```
-
-### Процесс загрузки
-
-```mermaid
-flowchart TD
-    Start[Boot loader<br/>RPi firmware] --> Init[Initramfs/init<br/>LUKS init]
-    
-    Init --> Check{Encrypted<br/>device<br/>configured?}
-    Check -->|No| NormalBoot[Normal boot continues]
-    Check -->|Yes| Wait[Wait for encrypted device]
-    
-    Wait --> TryUnlock{Try to unlock}
-    
-    TryUnlock --> USB[Scan USB for keyfile]
-    TryUnlock --> Embedded[Try embedded keyfile]
-    TryUnlock --> Passphrase[Prompt for passphrase]
-    
-    USB --> Unlock[cryptsetup luksOpen]
-    Embedded --> Unlock
-    Passphrase --> Unlock
-    
-    Unlock --> Success{Unlock<br/>successful?}
-    Success -->|No| Rescue[Rescue shell]
-    Success -->|Yes| Mount[Mount encrypted rootfs]
-    
-    Mount --> SwitchRoot[switch_root to /newroot]
-    SwitchRoot --> NormalBoot
-    
-    style Start fill:#e1f5ff,color:#000
-    style Unlock fill:#fff9c4,color:#000
-    style NormalBoot fill:#c8e6c9,color:#000
-    style Rescue fill:#ffcdd2,color:#000
-```
 
 ## Сравнение с sdm
 
@@ -453,22 +375,14 @@ gh workflow run build.yml -f board=raspberrypizero2w-64 -f encrypt=true
 
 ### Хранение результатов
 
-| Если настроен | Где хранится |
-|---------------|--------------|
-| `GDRIVE_CREDENTIALS` | Google Drive: `builds/<date>-<run_id>/` |
-| Ничего | GitHub Artifacts (fallback) |
-
-**Структуруа Google Drive:**
-```
-builds/2025-12-13-12345678/
-├── images/sdcard-encrypted.img.xz
-├── keys/<uuid>.lek (если автогенерация)
-└── build-info.txt
-```
-
-**GitHub Artifacts (fallback):**
-- `rpi5-luks-images` - образы (30 дней)
-- `rpi5-luks-keys` - keyfiles (7 дней, только при автогенерации)
+Результаты сборки сохраняются в Mega (через rclone) или GitHub Artifacts (fallback):
+- **Mega**: `builds/<board>-<init_system>-<date>-<run_id>/`
+  - `images/` - зашифрованные образы
+  - `keys/` - keyfiles (только при автогенерации)
+  - `build-info.txt` - информация о сборке
+- **GitHub Artifacts** (fallback, если Mega недоступен):
+  - `rpi5-luks-images` - образы (30 дней)
+  - `rpi5-luks-keys` - keyfiles (7 дней, только при автогенерации)
 
 ### GitHub Secrets
 
@@ -476,39 +390,45 @@ builds/2025-12-13-12345678/
 |--------|----------|
 | `LUKS_KEYFILE_BASE64` | Keyfile в base64 (опционально) |
 | `LUKS_PASSPHRASE` | Пароль для шифрования (опционально) |
-| `GDRIVE_CREDENTIALS` | Google Service Account JSON |
-| `GDRIVE_FOLDER_ID` | ID папки в Google Drive |
 | `BUILDROOT_EXTERNAL_TAR_BASE64` | Директория buildroot-external в tar.gz (base64) |
+| `MEGA_USER` | Email аккаунта Mega |
+| `MEGA_PASS` | Пароль аккаунта Mega |
+| `MEGA_FOLDER_ID` | ID папки в Mega (опционально, по умолчанию корень) |
 
 **Приоритет ключей:** Secret keyfile → Secret passphrase → Автогенерация
 
-**Приоритет хранения:** Google Drive → GitHub Artifacts
+**Приоритет хранения:** Mega → GitHub Artifacts
 
-### Настройка Google Drive
+### Настройка Mega для rclone
 
-1. Создайте Service Account в [Google Cloud Console](https://console.cloud.google.com/)
-2. Включите Google Drive API
-3. Скачайте JSON-ключ
-4. Поделитесь папкой в Drive для email сервис-аккаунта
-5. Добавьте secrets:
+1. Создайте аккаунт на [Mega.nz](https://mega.nz/) или используйте существующий
+
+2. (Опционально) Создайте папку для хранения сборок и получите её ID:
+   - Откройте папку в веб-интерфейсе Mega
+   - ID папки находится в URL: `mega.nz/folder/<FOLDER_ID>`
+
+3. Добавьте секреты в GitHub:
 
 ```bash
-# JSON credentials
-cat service-account.json | gh secret set GDRIVE_CREDENTIALS
+# Email аккаунта Mega
+gh secret set MEGA_USER
 
-# ID папки (из URL: drive.google.com/drive/folders/<ID>)
-gh secret set GDRIVE_FOLDER_ID
+# Пароль аккаунта Mega
+gh secret set MEGA_PASS
+
+# ID папки (опционально, оставьте пустым для корня)
+gh secret set MEGA_FOLDER_ID
 ```
 
-**Структура в Google Drive:**
+**Структура в Mega:**
 ```
 builds/
-└── 2025-12-13-12345678/
+└── raspberrypi5-openrc-2025-12-26-12345678/
     ├── images/
     │   ├── sdcard-encrypted.img.xz
     │   └── SHA256SUMS.txt
     ├── keys/
-    │   └── <uuid>.lek
+    │   └── <uuid>.lek (если автогенерация)
     ├── encryption-info.txt
     └── build-info.txt
 ```
@@ -719,6 +639,84 @@ gh workflow run build.yml -f board=raspberrypi5
 ```
 
 **Примечание:** Архив должен содержать директорию `buildroot-external/` целиком со всей структурой. Workflow автоматически извлечет её в корень workspace.
+
+## Диаграммы процессов
+
+### Процесс сборки Buildroot
+
+```mermaid
+flowchart TD
+    subgraph Buildroot
+        A[make] --> B[Compile packages]
+        B --> C[Create rootfs.ext4]
+        C --> D[scripts/post-build.sh<br/>General pre-image setup]
+        D --> E[board/*/post-build.sh<br/>Board-specific setup]
+        E --> F[Create sdcard.img]
+        F --> G[board/*/post-image.sh<br/>Raspberry Pi setup]
+    end
+    
+    subgraph "LUKS Encryption"
+        G --> H[scripts/post-image-encrypt.sh]
+        H --> I{BR2_LUKS_ENCRYPT=y?}
+        I -->|No| Done[sdcard.img<br/>unencrypted]
+        I -->|Yes| J[Generate keyfile]
+        J --> K[Encrypt rootfs]
+        K --> L[sdcard.img<br/>encrypted]
+        L --> M[Save keyfile<br/>to keys/]
+    end
+    
+    style L fill:#c8e6c9,color:#000
+    style M fill:#fff9c4,color:#000
+```
+
+### Процесс шифрования (pre-burn-encrypt.sh)
+
+```mermaid
+flowchart TD
+    A[Input .img<br/>unencrypted] --> B[Mount via loop device]
+    B --> C[Backup rootfs<br/>to temp directory]
+    C --> D[Create LUKS2 container<br/>with keyfile]
+    D --> E[Restore rootfs<br/>to encrypted container]
+    E --> F[Update boot configuration<br/>cmdline.txt, crypttab, fstab]
+    F --> G[Output .img<br/>encrypted]
+    
+    style A fill:#e1f5ff,color:#000
+    style G fill:#c8e6c9,color:#000
+    style D fill:#fff9c4,color:#000
+```
+
+### Процесс загрузки
+
+```mermaid
+flowchart TD
+    Start[Boot loader<br/>RPi firmware] --> Init[Initramfs/init<br/>LUKS init]
+    
+    Init --> Check{Encrypted<br/>device<br/>configured?}
+    Check -->|No| NormalBoot[Normal boot continues]
+    Check -->|Yes| Wait[Wait for encrypted device]
+    
+    Wait --> TryUnlock{Try to unlock}
+    
+    TryUnlock --> USB[Scan USB for keyfile]
+    TryUnlock --> Embedded[Try embedded keyfile]
+    TryUnlock --> Passphrase[Prompt for passphrase]
+    
+    USB --> Unlock[cryptsetup luksOpen]
+    Embedded --> Unlock
+    Passphrase --> Unlock
+    
+    Unlock --> Success{Unlock<br/>successful?}
+    Success -->|No| Rescue[Rescue shell]
+    Success -->|Yes| Mount[Mount encrypted rootfs]
+    
+    Mount --> SwitchRoot[switch_root to /newroot]
+    SwitchRoot --> NormalBoot
+    
+    style Start fill:#e1f5ff,color:#000
+    style Unlock fill:#fff9c4,color:#000
+    style NormalBoot fill:#c8e6c9,color:#000
+    style Rescue fill:#ffcdd2,color:#000
+```
 
 ## Лицензия
 
