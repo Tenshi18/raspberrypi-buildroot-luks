@@ -26,10 +26,16 @@ on:
         required: false
         default: '2025.11'
         type: string
+      build_debug:
+        description: 'Build debug image with QEMU virt support'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   BUILDROOT_VERSION: ${{ github.event.inputs.buildroot_version || '2025.11' }}
   TARGET_BOARD: ${{ github.event.inputs.board || 'raspberrypi5' }}
+  BUILD_DEBUG: ${{ github.event.inputs.build_debug || 'false' }}
   BR2_DL_DIR: ${{ github.workspace }}/dl-cache
   BR2_CCACHE_DIR: ${{ github.workspace }}/ccache-cache
 
@@ -64,10 +70,6 @@ jobs:
           # Extract to workspace root (not into buildroot-external/)
           echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -xz
           
-          # Show what was extracted (filenames only, no content)
-          echo "Extracted buildroot-external structure:"
-          find buildroot-external -type f | head -30
-          
           # Set execute permissions for host scripts only
           # Files in rootfs-overlay/ get permissions from file_permissions.txt via BR2_ROOTFS_DEVICE_TABLE
           chmod +x buildroot-external/scripts/*.sh 2>/dev/null || true
@@ -91,10 +93,6 @@ jobs:
           # Decode and extract
           # Archive should contain files without parent directory (created with -C board-dir .)
           echo "$BOARD_OVERLAY_TAR_BASE64" | base64 -d | tar -xz -C "$BOARD_DIR/"
-          
-          # Show what was extracted (filenames only, no content)
-          echo "Extracted files:"
-          find "$BOARD_DIR" -type f | head -20
           
           # Set execute permissions for host scripts only
           # Files in rootfs-overlay/ get permissions from file_permissions.txt via BR2_ROOTFS_DEVICE_TABLE
@@ -203,6 +201,29 @@ jobs:
             echo "BR2_LUKS_KEEP_UNENCRYPTED=y" >> .config
           fi
           
+          # Add virtio debug fragment for QEMU virt machine support (if debug build)
+          if [ "${{ env.BUILD_DEBUG }}" = "true" ] && [ "${{ env.TARGET_BOARD }}" = "raspberrypizero2w-64" ]; then
+            echo "Adding virtio debug fragment for QEMU virt machine..."
+            # Use Buildroot variable format for consistency with defconfig
+            VIRTIO_FRAGMENT="\$(BR2_EXTERNAL_LUKS_PI_PATH)/board/raspberrypizero2w-64/linux-virtio-debug.fragment"
+            VIRTIO_FRAGMENT_ABS="${BR2_EXTERNAL}/board/raspberrypizero2w-64/linux-virtio-debug.fragment"
+            
+            if [ -f "$VIRTIO_FRAGMENT_ABS" ]; then
+              # Get current fragment files (may contain Buildroot variables)
+              CURRENT_FRAGS=$(grep "^BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=" .config | cut -d'"' -f2 || echo "")
+              if [ -n "$CURRENT_FRAGS" ]; then
+                # Append virtio fragment to existing fragments
+                sed -i "s|^BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=.*|BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=\"${CURRENT_FRAGS} ${VIRTIO_FRAGMENT}\"|" .config
+              else
+                # Set if not present
+                echo "BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES=\"${VIRTIO_FRAGMENT}\"" >> .config
+              fi
+              echo "Virtio debug fragment added: $VIRTIO_FRAGMENT"
+            else
+              echo "Warning: Virtio debug fragment not found: $VIRTIO_FRAGMENT_ABS"
+            fi
+          fi
+          
           # Set cache directories
           echo "BR2_DL_DIR=\"${BR2_DL_DIR}\"" >> .config
           echo "BR2_CCACHE=y" >> .config
@@ -288,15 +309,23 @@ jobs:
           mkdir -p artifacts artifacts-keys
           cd buildroot/output/images
           
-          # Copy images (NOT keys)
+          # Copy images (NOT keys) with debug suffix if debug build
           if [ -f "sdcard-encrypted.img" ]; then
             xz -T0 -9 sdcard-encrypted.img
-            cp sdcard-encrypted.img.xz ${{ github.workspace }}/artifacts/
+            if [ "${{ env.BUILD_DEBUG }}" = "true" ]; then
+              cp sdcard-encrypted.img.xz ${{ github.workspace }}/artifacts/sdcard-encrypted-debug-virtio.img.xz
+            else
+              cp sdcard-encrypted.img.xz ${{ github.workspace }}/artifacts/
+            fi
           fi
           
           if [ -f "sdcard.img" ]; then
             xz -T0 -9 sdcard.img
-            cp sdcard.img.xz ${{ github.workspace }}/artifacts/
+            if [ "${{ env.BUILD_DEBUG }}" = "true" ]; then
+              cp sdcard.img.xz ${{ github.workspace }}/artifacts/sdcard-debug-virtio.img.xz
+            else
+              cp sdcard.img.xz ${{ github.workspace }}/artifacts/
+            fi
           fi
           
           # Copy encryption info (without sensitive data)
@@ -345,10 +374,20 @@ jobs:
           # Create folder structure: builds/<board>-<date>-<run_id>/
           BUILD_FOLDER="builds/${{ env.TARGET_BOARD }}-$(date +%Y-%m-%d)-${{ github.run_id }}"
           
-          # Upload encrypted image
+          # Upload encrypted image(s)
           if [ -f "artifacts/sdcard-encrypted.img.xz" ]; then
             echo "Uploading encrypted image to Google Drive..."
             rclone copy artifacts/sdcard-encrypted.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
+          fi
+          if [ -f "artifacts/sdcard-encrypted-debug-virtio.img.xz" ]; then
+            echo "Uploading debug encrypted image to Google Drive..."
+            rclone copy artifacts/sdcard-encrypted-debug-virtio.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
+          fi
+          if [ -f "artifacts/sdcard-debug-virtio.img.xz" ]; then
+            echo "Uploading debug unencrypted image to Google Drive..."
+            rclone copy artifacts/sdcard-debug-virtio.img.xz "gdrive:${BUILD_FOLDER}/images/" --progress
+          fi
+          if [ -f "artifacts/SHA256SUMS.txt" ]; then
             rclone copy artifacts/SHA256SUMS.txt "gdrive:${BUILD_FOLDER}/images/" --progress
           fi
           
@@ -374,6 +413,7 @@ jobs:
           Date: $(date -Iseconds)
           Buildroot: ${BUILDROOT_VERSION}
           Encrypted: ${{ github.event.inputs.encrypt }}
+          Debug (QEMU virt): ${{ env.BUILD_DEBUG }}
           
           Files:
           $(ls -la artifacts/ 2>/dev/null || echo "No artifacts")
@@ -384,24 +424,13 @@ jobs:
           
           # Cleanup credentials
           rm -f /tmp/gdrive-sa.json
-
-      - name: Upload artifacts (fallback to GitHub)
+          
+      - name: Warn if Google Drive not configured
         if: ${{ env.HAS_GDRIVE_CREDS == 'false' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.TARGET_BOARD }}-luks-images
-          path: artifacts/
-          retention-days: 30
-          if-no-files-found: error
-
-      - name: Upload keyfiles (fallback to GitHub)
-        if: ${{ env.HAS_GDRIVE_CREDS == 'false' && github.event.inputs.encrypt != 'false' && env.SKIP_KEYFILE_UPLOAD != 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.TARGET_BOARD }}-luks-keys
-          path: artifacts-keys/
-          retention-days: 7
-          if-no-files-found: warn
+        run: |
+          echo "::warning::Google Drive credentials not configured. Artifacts will not be uploaded."
+          echo "::warning::Configure GDRIVE_CREDENTIALS and GDRIVE_FOLDER_ID secrets to enable uploads."
+          echo "::warning::Images and keyfiles are available in the runner workspace but will be deleted after job completion."
 
   # Optional: Create release on tag
   release:
