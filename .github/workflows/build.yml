@@ -31,13 +31,24 @@ env:
 
 jobs:
   build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - init_system: runit
+            secret_name: BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64
+            build_suffix: runit
+            should_build: ${{ github.event.inputs.init_system == 'both' || github.event.inputs.init_system == 'runit' }}
+          - init_system: openrc
+            secret_name: BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64
+            build_suffix: openrc
+            should_build: ${{ github.event.inputs.init_system == 'both' || github.event.inputs.init_system == 'openrc' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 300  # 5 часов максимум
     outputs:
       target_board: ${{ env.TARGET_BOARD }}
     env:
-      HAS_BUILDROOT_EXTERNAL: ${{ secrets.BUILDROOT_EXTERNAL_TAR_BASE64 != '' }}
-      HAS_BOARD_OVERLAY: ${{ secrets.BOARD_OVERLAY_TAR_BASE64 != '' }}
+      HAS_BUILDROOT_EXTERNAL: ${{ secrets[matrix.secret_name] != '' }}
       HAS_MEGA_CREDS: ${{ secrets.MEGA_USER != '' && secrets.MEGA_PASS != '' }}
 
     steps:
@@ -45,6 +56,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check Mega credentials
+        if: matrix.should_build == 'true'
         run: |
           if [ -z "${{ secrets.MEGA_USER }}" ]; then
             echo "::error::Mega credentials not configured!"
@@ -59,14 +71,14 @@ jobs:
           echo "✓ Mega credentials configured"
 
       - name: Extract buildroot-external from secret
-        if: ${{ env.HAS_BUILDROOT_EXTERNAL == 'true' }}
+        if: ${{ matrix.should_build == 'true' && env.HAS_BUILDROOT_EXTERNAL == 'true' }}
         env:
-          BUILDROOT_EXTERNAL_TAR_BASE64: ${{ secrets.BUILDROOT_EXTERNAL_TAR_BASE64 }}
+          BUILDROOT_EXTERNAL_TAR_BASE64: ${{ secrets[matrix.secret_name] }}
         run: |
           # Mask the secret in logs
           echo "::add-mask::$BUILDROOT_EXTERNAL_TAR_BASE64"
           
-          echo "Extracting buildroot-external from secret..."
+          echo "Extracting buildroot-external (${{ matrix.init_system }}) from secret..."
           
           # Decode and extract
           # Archive should contain buildroot-external/ directory structure
@@ -79,30 +91,8 @@ jobs:
           chmod +x buildroot-external/board/*/post-build.sh 2>/dev/null || true
           chmod +x buildroot-external/board/*/post-image.sh 2>/dev/null || true
 
-      - name: Extract secret board overlay (legacy, if buildroot-external not in secret)
-        if: ${{ env.HAS_BOARD_OVERLAY == 'true' && env.HAS_BUILDROOT_EXTERNAL == 'false' }}
-        env:
-          BOARD_OVERLAY_TAR_BASE64: ${{ secrets.BOARD_OVERLAY_TAR_BASE64 }}
-        run: |
-          # Mask the secret in logs
-          echo "::add-mask::$BOARD_OVERLAY_TAR_BASE64"
-          
-          BOARD_DIR="buildroot-external/board/${{ env.TARGET_BOARD }}"
-          echo "Extracting secret board overlay to $BOARD_DIR..."
-          
-          # Create directory if it doesn't exist
-          mkdir -p "$BOARD_DIR"
-          
-          # Decode and extract
-          # Archive should contain files without parent directory (created with -C board-dir .)
-          echo "$BOARD_OVERLAY_TAR_BASE64" | base64 -d | tar -xz -C "$BOARD_DIR/"
-          
-          # Set execute permissions for host scripts only
-          # Files in rootfs-overlay/ get permissions from file_permissions.txt via BR2_ROOTFS_DEVICE_TABLE
-          chmod +x "$BOARD_DIR"/post-build.sh 2>/dev/null || true
-          chmod +x "$BOARD_DIR"/post-image.sh 2>/dev/null || true
-
       - name: Free up disk space
+        if: matrix.should_build == 'true'
         run: |
           echo "=== Before cleanup ==="
           df -h
@@ -118,6 +108,7 @@ jobs:
           df -h
 
       - name: Install dependencies
+        if: matrix.should_build == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -140,6 +131,7 @@ jobs:
             e2fsprogs
 
       - name: Cache Buildroot downloads
+        if: matrix.should_build == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.BR2_DL_DIR }}
@@ -151,21 +143,26 @@ jobs:
             buildroot-dl-
 
       - name: Cache ccache
+        if: matrix.should_build == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.BR2_CCACHE_DIR }}
-          key: buildroot-ccache-${{ env.BUILDROOT_VERSION }}-${{ github.sha }}
+          # Include init_system to avoid cache conflicts between runit and openrc
+          key: buildroot-ccache-${{ env.BUILDROOT_VERSION }}-${{ matrix.build_suffix }}-${{ github.sha }}
           restore-keys: |
+            buildroot-ccache-${{ env.BUILDROOT_VERSION }}-${{ matrix.build_suffix }}-
             buildroot-ccache-${{ env.BUILDROOT_VERSION }}-
             buildroot-ccache-
 
       - name: Download and extract Buildroot
+        if: matrix.should_build == 'true'
         run: |
           wget -q "https://buildroot.org/downloads/buildroot-${BUILDROOT_VERSION}.tar.xz"
           tar -xf "buildroot-${BUILDROOT_VERSION}.tar.xz"
           mv "buildroot-${BUILDROOT_VERSION}" buildroot
 
       - name: Configure Buildroot
+        if: matrix.should_build == 'true'
         run: |
           cd buildroot
           
@@ -228,6 +225,7 @@ jobs:
           make olddefconfig
 
       - name: Build image
+        if: matrix.should_build == 'true'
         run: |
           cd buildroot
           export BR2_EXTERNAL="${{ github.workspace }}/buildroot-external"
@@ -236,6 +234,7 @@ jobs:
           make -j$(nproc)
 
       - name: Prepare artifacts
+        if: matrix.should_build == 'true'
         run: |
           mkdir -p artifacts
           cd buildroot/output/images
@@ -255,6 +254,7 @@ jobs:
           sha256sum *.img.xz > SHA256SUMS.txt 2>/dev/null || true
 
       - name: Upload to Mega
+        if: matrix.should_build == 'true'
         id: upload_mega
         continue-on-error: true
         env:
@@ -276,8 +276,8 @@ jobs:
           pass = ${MEGA_PASS}
           EOF
           
-          # Create folder structure: builds/<board>-<date>-<run_id>/
-          BUILD_FOLDER="builds/${{ env.TARGET_BOARD }}-$(date +%Y-%m-%d)-${{ github.run_id }}"
+          # Create folder structure: builds/<board>-<init_system>-<date>-<run_id>/
+          BUILD_FOLDER="builds/${{ env.TARGET_BOARD }}-${{ matrix.build_suffix }}-$(date +%Y-%m-%d)-${{ github.run_id }}"
           FULL_PATH="${MEGA_FOLDER_ID:-/}${BUILD_FOLDER}"
           
           # Create remote directory if not exists
@@ -329,7 +329,7 @@ jobs:
         if: steps.upload_mega.outcome == 'failure' || env.HAS_MEGA_CREDS == 'false'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ format('{0}{1}-images', env.TARGET_BOARD, env.BUILD_DEBUG == 'true' && '-debug-virtio' || '') }}
+          name: ${{ format('{0}-{1}{2}-images', env.TARGET_BOARD, matrix.build_suffix, env.BUILD_DEBUG == 'true' && '-debug-virtio' || '') }}
           path: artifacts/
           retention-days: 7
           if-no-files-found: error
