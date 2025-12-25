@@ -50,9 +50,6 @@ jobs:
           - init_system: openrc
             secret_name: BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64
             build_suffix: openrc
-    if: |
-      github.event.inputs.init_system == 'both' ||
-      github.event.inputs.init_system == matrix.init_system
     runs-on: ubuntu-24.04
     timeout-minutes: 300  # 5 часов максимум
     outputs:
@@ -80,7 +77,7 @@ jobs:
           echo "✓ Mega credentials configured"
 
       - name: Extract buildroot-external from secret
-        if: ${{ env.HAS_BUILDROOT_EXTERNAL == 'true' }}
+        if: ${{ steps.check_build.outputs.should_build == 'true' && env.HAS_BUILDROOT_EXTERNAL == 'true' }}
         env:
           BUILDROOT_EXTERNAL_TAR_BASE64: ${{ secrets[matrix.secret_name] }}
         run: |
@@ -101,6 +98,7 @@ jobs:
           chmod +x buildroot-external/board/*/post-image.sh 2>/dev/null || true
 
       - name: Free up disk space
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           echo "=== Before cleanup ==="
           df -h
@@ -116,6 +114,7 @@ jobs:
           df -h
 
       - name: Install dependencies
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -138,6 +137,7 @@ jobs:
             e2fsprogs
 
       - name: Cache Buildroot downloads
+        if: steps.check_build.outputs.should_build == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.BR2_DL_DIR }}
@@ -149,6 +149,7 @@ jobs:
             buildroot-dl-
 
       - name: Cache ccache
+        if: steps.check_build.outputs.should_build == 'true'
         uses: actions/cache@v4
         with:
           path: ${{ env.BR2_CCACHE_DIR }}
@@ -160,12 +161,14 @@ jobs:
             buildroot-ccache-
 
       - name: Download and extract Buildroot
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           wget -q "https://buildroot.org/downloads/buildroot-${BUILDROOT_VERSION}.tar.xz"
           tar -xf "buildroot-${BUILDROOT_VERSION}.tar.xz"
           mv "buildroot-${BUILDROOT_VERSION}" buildroot
 
       - name: Configure Buildroot
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           cd buildroot
           
@@ -228,6 +231,7 @@ jobs:
           make olddefconfig
 
       - name: Build image
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           cd buildroot
           export BR2_EXTERNAL="${{ github.workspace }}/buildroot-external"
@@ -236,6 +240,7 @@ jobs:
           make -j$(nproc)
 
       - name: Prepare artifacts
+        if: steps.check_build.outputs.should_build == 'true'
         run: |
           mkdir -p artifacts
           cd buildroot/output/images
@@ -255,6 +260,7 @@ jobs:
           sha256sum *.img.xz > SHA256SUMS.txt 2>/dev/null || true
 
       - name: Upload to Mega
+        if: steps.check_build.outputs.should_build == 'true'
         id: upload_mega
         continue-on-error: true
         env:
