@@ -114,7 +114,7 @@ sudo dd if=encrypted/device_001.img of=/dev/sdY bs=4M status=progress
         │       │   └── custom-app.py # Пример кастомного Python-скрипта
         │       └── var/log/
         │
-        └── raspberrypizero2w-64/     # Raspberry Pi Zero 2W (использует OpenRC)
+        └── raspberrypizero2w-64/     # Raspberry Pi Zero 2W
             ├── cmdline.txt.example   # Пример параметров ядра (скопируйте в cmdline.txt)
             ├── file_permissions.txt.example # Пример прав доступа (скопируйте в file_permissions.txt)
             ├── genimage.cfg
@@ -134,8 +134,19 @@ sudo dd if=encrypted/device_001.img of=/dev/sdY bs=4M status=progress
                 │   │   ├── NetworkManager.conf
                 │   │   └── system-connections/
                 │   │       └── sample.nmconnection.example # Пример WiFi конфигурации
-                │   ├── runlevels/
-                │   │   └── default/  # OpenRC runlevels
+                │   ├── runit/        # Runit init system (для runit-buildroot-external)
+                │   │   ├── 1         # Runit stage 1 (опционально)
+                │   │   ├── 2         # Runit stage 2 - запуск runsvdir
+                │   │   ├── fix-services.sh  # Утилита для ручного исправления симлинков
+                │   │   └── sv/       # Определения сервисов
+                │   │       ├── zerolite-cpp/
+                │   │       │   ├── run      # Скрипт запуска сервиса
+                │   │       │   ├── finish   # Скрипт завершения
+                │   │       │   └── log/
+                │   │       │       └── run   # Скрипт логирования
+                │   │       └── modules/     # Другие сервисы
+                │   ├── runlevels/    # OpenRC runlevels (только для openrc-buildroot-external)
+                │   │   └── default/
                 │   └── var/log/
 ```
 
@@ -476,6 +487,8 @@ builds/
 - `runit-buildroot-external/` - конфигурация для runit
 
 **Структура директории buildroot-external:**
+
+**Для OpenRC (openrc-buildroot-external/):**
 ```
 buildroot-external/
 ├── external.desc                # Описание external tree
@@ -525,6 +538,68 @@ buildroot-external/
             │   └── var/log/
             └── root/
 ```
+
+**Для Runit (runit-buildroot-external/):**
+```
+buildroot-external/
+├── external.desc                # Описание external tree
+├── external.mk                  # Makefile расширений
+├── Config.in                    # Меню конфигурации
+├── configs/                     # Defconfig файлы НЕ должны быть в репозитории (содержат пароли)
+│   └── (создайте свои defconfig локально)
+├── scripts/                     # Общие скрипты
+│   ├── post-build.sh
+│   └── post-image-encrypt.sh
+├── package/                     # Кастомные пакеты
+│   ├── busybox/
+│   │   └── busybox-runit.config  # Конфигурация BusyBox для runit applets
+│   └── custom-app/
+└── board/                       # Конфигурации для каждого устройства
+    └── raspberrypizero2w-64/    # Raspberry Pi Zero 2W (Runit)
+        ├── cmdline.txt.example  # Пример (скопируйте в cmdline.txt)
+        ├── file_permissions.txt.example # Пример (скопируйте в file_permissions.txt)
+        ├── genimage.cfg
+        ├── linux-luks.fragment
+        ├── linux-virtio-debug.fragment
+        ├── post-build.sh         # Создаёт симлинки из /etc/runit/sv/ в /etc/service/
+        ├── post-image.sh
+        └── rootfs-overlay/
+            ├── init              # Initramfs init с LUKS
+            ├── etc/
+            │   ├── chrony.conf
+            │   ├── hostname
+            │   ├── init.d/
+            │   │   └── rcS       # Общий init-скрипт (не для сервисов)
+            │   ├── inittab       # BusyBox init config, запускает /etc/runit/2
+            │   ├── NetworkManager/
+            │   │   ├── NetworkManager.conf
+            │   │   └── system-connections/
+            │   │       └── sample.nmconnection.example # Пример WiFi
+            │   ├── runit/        # Runit init system
+            │   │   ├── 1         # Runit stage 1 (опционально)
+            │   │   ├── 2         # Runit stage 2 - запуск runsvdir /etc/service
+            │   │   ├── fix-services.sh  # Утилита для ручного исправления симлинков
+            │   │   └── sv/       # Определения сервисов (service definitions)
+            │   │       ├── zerolite-cpp/
+            │   │       │   ├── run      # Скрипт запуска сервиса (обязательно)
+            │   │       │   ├── finish   # Скрипт завершения (опционально)
+            │   │       │   └── log/
+            │   │       │       └── run   # Скрипт логирования через svlogd
+            │   │       └── modules/     # Другие сервисы
+            │   └── var/log/
+            └── root/
+```
+
+**Ключевые отличия Runit от OpenRC:**
+
+| Аспект | OpenRC | Runit |
+|--------|--------|-------|
+| **Определения сервисов** | `/etc/init.d/` | `/etc/runit/sv/` |
+| **Активные сервисы** | `/etc/runlevels/default/` (симлинки) | `/etc/service/` (симлинки, создаются автоматически) |
+| **Запуск сервисов** | OpenRC init | `runsvdir /etc/service` (через `/etc/runit/2`) |
+| **Init system** | OpenRC | BusyBox init + BusyBox runit applets |
+| **Конфигурация** | OpenRC runlevels | `/etc/inittab` → `/etc/runit/2` |
+| **post-build.sh** | Создаёт runlevels | Создаёт симлинки `/etc/service/` → `/etc/runit/sv/` |
 
 **Инструкции по наполнению:**
 
@@ -647,7 +722,17 @@ buildroot-external/
    - Они уже добавлены в `.gitignore`
    - Используйте примерные файлы как шаблоны
 
-   - `board/*/rootfs-overlay/etc/init.d/*` - ваши init-скрипты
+   **Для OpenRC:**
+   - `board/*/rootfs-overlay/etc/init.d/*` - ваши OpenRC init-скрипты
+   - `board/*/rootfs-overlay/etc/runlevels/default/` - симлинки на активные сервисы
+
+   **Для Runit:**
+   - `board/*/rootfs-overlay/etc/runit/sv/<service-name>/run` - скрипт запуска сервиса (обязательно)
+   - `board/*/rootfs-overlay/etc/runit/sv/<service-name>/finish` - скрипт завершения (опционально)
+   - `board/*/rootfs-overlay/etc/runit/sv/<service-name>/log/run` - скрипт логирования (опционально)
+   - Симлинки в `/etc/service/` создаются автоматически в `post-build.sh`
+
+   **Общее:**
    - `board/*/rootfs-overlay/root/*` - ваши пользовательские скрипты и приложения
    - `board/*/rootfs-overlay/usr/local/bin/*` - ваши исполняемые файлы
    - Любые другие файлы в `rootfs-overlay/`
