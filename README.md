@@ -433,8 +433,8 @@ builds/
 |--------|----------|
 | `LUKS_KEYFILE_BASE64` | Keyfile в base64 (опционально, для build-encrypted.yml) |
 | `LUKS_PASSPHRASE` | Пароль для шифрования (опционально, для build-encrypted.yml) |
-| `BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64` | Архив buildroot-external для OpenRC в tar.gz (base64) |
-| `BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64` | Архив buildroot-external для runit в tar.gz (base64) |
+| `BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64` | Архив buildroot-external для OpenRC в tar.xz (base64) |
+| `BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64` | Архив buildroot-external для runit в tar.xz (base64) |
 | `MEGA_USER` | Email аккаунта Mega (обязательно) |
 | `MEGA_PASS` | Пароль аккаунта Mega (обязательно) |
 | `MEGA_FOLDER_ID` | ID папки в Mega (опционально, по умолчанию корень) |
@@ -753,20 +753,21 @@ buildroot-external/
 ```bash
 # 6. Упакуйте buildroot-external для каждой init-системы в отдельные архивы:
 # ВАЖНО: Создавайте архивы из родительской директории, чтобы пути начинались с buildroot-external/
+# Используйте xz сжатие для лучшего сжатия (важно для лимита GitHub Secrets 64KB)
 
 # Для OpenRC:
 cd openrc-buildroot-external
-tar czf ../openrc-buildroot-external.tar.gz buildroot-external/
+tar cJf ../openrc-buildroot-external.tar.xz buildroot-external/
 cd ..
 
 # Для Runit:
 cd runit-buildroot-external
-tar czf ../runit-buildroot-external.tar.gz buildroot-external/
+tar cJf ../runit-buildroot-external.tar.xz buildroot-external/
 cd ..
 
 # 7. Закодируйте в base64 и добавьте в secrets:
-base64 -w 0 openrc-buildroot-external.tar.gz | gh secret set BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64
-base64 -w 0 runit-buildroot-external.tar.gz | gh secret set BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64
+base64 -w 0 openrc-buildroot-external.tar.xz | gh secret set BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64
+base64 -w 0 runit-buildroot-external.tar.xz | gh secret set BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64
 
 # 8. Запустите сборку:
 gh workflow run build.yml -f board=raspberrypi5 -f init_system=both
@@ -777,7 +778,7 @@ gh workflow run build.yml -f board=raspberrypi5 -f init_system=both
 **Проверка структуры архива:**
 ```bash
 # Убедитесь, что пути начинаются с buildroot-external/:
-tar tzf openrc-buildroot-external.tar.gz | head -5
+tar tJf openrc-buildroot-external.tar.xz | head -5
 # Должно быть:
 # buildroot-external/
 # buildroot-external/board/
