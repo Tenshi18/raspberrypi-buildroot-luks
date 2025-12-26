@@ -132,7 +132,17 @@ jobs:
           # Archive should contain buildroot-external/ directory structure
           # Extract to workspace root (not into buildroot-external/)
           # Support both .tar.gz and .tar.xz formats
-          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -x
+          # Save to temp file to detect format, then extract
+          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d > /tmp/buildroot-external.tar.tmp
+          FILE_TYPE=$(file -b /tmp/buildroot-external.tar.tmp)
+          if echo "$FILE_TYPE" | grep -q "XZ compressed"; then
+            # xz format
+            tar -xJf /tmp/buildroot-external.tar.tmp
+          else
+            # gzip format (default)
+            tar -xzf /tmp/buildroot-external.tar.tmp
+          fi
+          rm -f /tmp/buildroot-external.tar.tmp
           
           # Set execute permissions for host scripts only
           # Files in rootfs-overlay/ get permissions from file_permissions.txt via BR2_ROOTFS_DEVICE_TABLE
