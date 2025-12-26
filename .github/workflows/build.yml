@@ -120,7 +120,8 @@ jobs:
           # Decode and extract
           # Archive should contain buildroot-external/ directory structure
           # Extract to workspace root (not into buildroot-external/)
-          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -xz
+          # Support both .tar.gz and .tar.xz formats
+          echo "$BUILDROOT_EXTERNAL_TAR_BASE64" | base64 -d | tar -x
           
           # Set execute permissions for host scripts only
           # Files in rootfs-overlay/ get permissions from file_permissions.txt via BR2_ROOTFS_DEVICE_TABLE
