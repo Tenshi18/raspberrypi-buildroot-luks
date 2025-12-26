@@ -61,7 +61,11 @@ sudo dd if=encrypted/device_001.img of=/dev/sdY bs=4M status=progress
 ├── pre-burn-encrypt.sh              # Основной скрипт шифрования
 ├── batch-encrypt-images.sh          # Пакетная обработка
 │
-└── buildroot-external/              # BR2_EXTERNAL для Buildroot
+├── buildroot-external/              # BR2_EXTERNAL для Buildroot (базовая структура, примеры)
+├── openrc-buildroot-external/      # BR2_EXTERNAL для OpenRC (секретные файлы)
+│   └── buildroot-external/          # Архивируется в BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64
+└── runit-buildroot-external/        # BR2_EXTERNAL для runit (секретные файлы)
+    └── buildroot-external/          # Архивируется в BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64
     ├── external.desc                # Описание external tree
     ├── external.mk                  # Makefile расширений
     ├── Config.in                    # Меню конфигурации LUKS
@@ -346,15 +350,27 @@ aes-xts-plain64:    ~88 MiB/s шифрование, ~108 MiB/s дешифров�
 
 ## CI/CD с GitHub Actions
 
-Автоматическая сборка образов в облаке:
+Автоматическая сборка образов в облаке с поддержкой параллельных сборок для разных init-систем (runit и OpenRC):
 
 ```bash
-# Raspberry Pi 5
-gh workflow run build.yml -f board=raspberrypi5 -f encrypt=true
+# Raspberry Pi 5 с выбором init-системы
+gh workflow run build.yml -f board=raspberrypi5 -f init_system=both
+gh workflow run build.yml -f board=raspberrypi5 -f init_system=runit
+gh workflow run build.yml -f board=raspberrypi5 -f init_system=openrc
 
 # Raspberry Pi Zero 2W
-gh workflow run build.yml -f board=raspberrypizero2w-64 -f encrypt=true
+gh workflow run build.yml -f board=raspberrypizero2w-64 -f init_system=both
+gh workflow run build.yml -f board=raspberrypizero2w-64 -f init_system=runit
+gh workflow run build.yml -f board=raspberrypizero2w-64 -f init_system=openrc
+
+# Зашифрованные образы
+gh workflow run build-encrypted.yml -f board=raspberrypi5 -f init_system=both
 ```
+
+**Параметры workflow:**
+- `board`: `raspberrypi5` или `raspberrypizero2w-64`
+- `init_system`: `runit`, `openrc` или `both` (по умолчанию `both` - собирает обе версии параллельно)
+- `encrypt`: `true` для зашифрованных образов (используйте `build-encrypted.yml`)
 
 ### Характеристики бесплатных runners
 
@@ -370,34 +386,53 @@ gh workflow run build.yml -f board=raspberrypizero2w-64 -f encrypt=true
 
 | Этап | Без кэша | С кэшем |
 |------|----------|---------|
-| Полная сборка | 1.5-3 ч | 20-40 мин |
+| Полная сборка (одна init-система) | 1.5-3 ч | 20-40 мин |
+| Полная сборка (обе init-системы, параллельно) | 1.5-3 ч | 20-40 мин |
 | Шифрование | 2-5 мин | 2-5 мин |
+
+**Примечание:** При выборе `init_system=both` обе версии (runit и OpenRC) собираются **параллельно** в отдельных jobs благодаря matrix strategy. Время сборки не удваивается, так как jobs выполняются одновременно.
 
 ### Хранение результатов
 
 Результаты сборки сохраняются в Mega (через rclone) или GitHub Artifacts (fallback):
 - **Mega**: `builds/<board>-<init_system>-<date>-<run_id>/`
-  - `images/` - зашифрованные образы
-  - `keys/` - keyfiles (только при автогенерации)
+  - `images/` - образы (зашифрованные для build-encrypted.yml)
+  - `keys/` - keyfiles (только для build-encrypted.yml при автогенерации)
   - `build-info.txt` - информация о сборке
 - **GitHub Artifacts** (fallback, если Mega недоступен):
-  - `rpi5-luks-images` - образы (30 дней)
-  - `rpi5-luks-keys` - keyfiles (7 дней, только при автогенерации)
+  - `<board>-<init_system>-images` - образы (7 дней)
+  - `<board>-<init_system>-luks-keys` - keyfiles (7 дней, только для build-encrypted.yml)
+
+**Пример структуры в Mega:**
+```
+builds/
+├── raspberrypi5-runit-2025-12-26-12345678/
+│   └── images/
+│       ├── sdcard.img.xz
+│       └── SHA256SUMS.txt
+└── raspberrypi5-openrc-2025-12-26-12345678/
+    └── images/
+        ├── sdcard.img.xz
+        └── SHA256SUMS.txt
+```
 
 ### GitHub Secrets
 
 | Secret | Описание |
 |--------|----------|
-| `LUKS_KEYFILE_BASE64` | Keyfile в base64 (опционально) |
-| `LUKS_PASSPHRASE` | Пароль для шифрования (опционально) |
-| `BUILDROOT_EXTERNAL_TAR_BASE64` | Директория buildroot-external в tar.gz (base64) |
-| `MEGA_USER` | Email аккаунта Mega |
-| `MEGA_PASS` | Пароль аккаунта Mega |
+| `LUKS_KEYFILE_BASE64` | Keyfile в base64 (опционально, для build-encrypted.yml) |
+| `LUKS_PASSPHRASE` | Пароль для шифрования (опционально, для build-encrypted.yml) |
+| `BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64` | Архив buildroot-external для OpenRC в tar.gz (base64) |
+| `BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64` | Архив buildroot-external для runit в tar.gz (base64) |
+| `MEGA_USER` | Email аккаунта Mega (обязательно) |
+| `MEGA_PASS` | Пароль аккаунта Mega (обязательно) |
 | `MEGA_FOLDER_ID` | ID папки в Mega (опционально, по умолчанию корень) |
 
 **Приоритет ключей:** Secret keyfile → Secret passphrase → Автогенерация
 
-**Приоритет хранения:** Mega → GitHub Artifacts
+**Приоритет хранения:** Mega → GitHub Artifacts (fallback)
+
+**Важно:** Сборка **провалится**, если не настроены секреты Mega (`MEGA_USER` и `MEGA_PASS`). Это сделано намеренно для предотвращения случайной публикации образов в открытые GitHub Artifacts.
 
 ### Настройка Mega для rclone
 
@@ -420,7 +455,7 @@ gh secret set MEGA_PASS
 gh secret set MEGA_FOLDER_ID
 ```
 
-**Структура в Mega:**
+**Структура в Mega для зашифрованных образов:**
 ```
 builds/
 └── raspberrypi5-openrc-2025-12-26-12345678/
@@ -435,7 +470,10 @@ builds/
 
 ### Секретный Buildroot External
 
-Для хранения конфиденциальных файлов (данные WiFi-сети, скрипты, конфиги, секретные board-конфигурации):
+Для хранения конфиденциальных файлов (данные WiFi-сети, скрипты, конфиги, секретные board-конфигурации) используются отдельные директории для каждой init-системы:
+
+- `openrc-buildroot-external/` - конфигурация для OpenRC
+- `runit-buildroot-external/` - конфигурация для runit
 
 **Структура директории buildroot-external:**
 ```
@@ -628,17 +666,39 @@ buildroot-external/
    ```
 
 ```bash
-# 6. Упакуйте весь buildroot-external в архив:
-tar -czf buildroot-external.tar.gz buildroot-external/
+# 6. Упакуйте buildroot-external для каждой init-системы в отдельные архивы:
+# ВАЖНО: Создавайте архивы из родительской директории, чтобы пути начинались с buildroot-external/
+
+# Для OpenRC:
+cd openrc-buildroot-external
+tar czf ../openrc-buildroot-external.tar.gz buildroot-external/
+cd ..
+
+# Для Runit:
+cd runit-buildroot-external
+tar czf ../runit-buildroot-external.tar.gz buildroot-external/
+cd ..
 
 # 7. Закодируйте в base64 и добавьте в secrets:
-base64 -w 0 buildroot-external.tar.gz | gh secret set BUILDROOT_EXTERNAL_TAR_BASE64
+base64 -w 0 openrc-buildroot-external.tar.gz | gh secret set BUILDROOT_EXTERNAL_OPENRC_TAR_BASE64
+base64 -w 0 runit-buildroot-external.tar.gz | gh secret set BUILDROOT_EXTERNAL_RUNIT_TAR_BASE64
 
 # 8. Запустите сборку:
-gh workflow run build.yml -f board=raspberrypi5
+gh workflow run build.yml -f board=raspberrypi5 -f init_system=both
 ```
 
-**Примечание:** Архив должен содержать директорию `buildroot-external/` целиком со всей структурой. Workflow автоматически извлечет её в корень workspace.
+**Критически важно:** Архив должен создаваться из родительской директории (`openrc-buildroot-external/` или `runit-buildroot-external/`), чтобы пути в архиве начинались с `buildroot-external/`. При извлечении в корень workspace структура будет правильной: `buildroot-external/board/.../cmdline.txt`.
+
+**Проверка структуры архива:**
+```bash
+# Убедитесь, что пути начинаются с buildroot-external/:
+tar tzf openrc-buildroot-external.tar.gz | head -5
+# Должно быть:
+# buildroot-external/
+# buildroot-external/board/
+# buildroot-external/board/raspberrypizero2w-64/
+# buildroot-external/board/raspberrypizero2w-64/cmdline.txt
+```
 
 ## Диаграммы процессов
 
