@@ -292,13 +292,14 @@ function encrypt_image() {
     # Format with LUKS using keyfile (no passphrase prompt)
     # Using pbkdf2 instead of argon2i for low-memory devices (RPi Zero 2W has 512MB)
     # argon2i requires ~1GB RAM to open keyslot, pbkdf2 works with much less
-    # iter-time 1000ms = ~3M iterations, reasonable for embedded ARM devices
-    # (5000ms on x86 = 14M iterations, too slow on emulated/real ARM)
+    # iter-time 200ms = ~600K iterations, faster unlock on weak CPUs (5-10s vs 28s)
+    # Still secure enough for embedded devices (1000ms = ~3M iterations, too slow)
+    # (5000ms on x86 = 14M iterations, way too slow on emulated/real ARM)
     cryptsetup luksFormat \
         --type luks2 \
         --cipher "$cipher" \
         --hash sha256 \
-        --iter-time 1000 \
+        --iter-time 200 \
         --key-size 256 \
         --pbkdf pbkdf2 \
         --batch-mode \
@@ -537,6 +538,4 @@ echo "  1. Format USB drive with FAT32"
 echo "  2. Copy $(basename "$KEYFILE") to the USB drive"
 echo ""
 echo "To burn image:"
-echo "  dd if=$OUTPUT_IMG of=/dev/sdX bs=4M status=progress"
-echo ""
-
+echo "dd if=$OUTPUT_IMG of=/dev/sdX bs=4M status=progress"
