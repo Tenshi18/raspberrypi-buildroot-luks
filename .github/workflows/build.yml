@@ -274,6 +274,13 @@ jobs:
           echo "BR2_CCACHE=y" >> .config
           echo "BR2_CCACHE_DIR=\"${BR2_CCACHE_DIR}\"" >> .config
           
+          # Set parallel build level to avoid jobserver mode warnings
+          # BR2_JLEVEL=0 means auto-detect (CPUs + 1), or set explicit value
+          # This allows Buildroot to manage parallelism internally
+          if ! grep -q "^BR2_JLEVEL=" .config; then
+            echo "BR2_JLEVEL=0" >> .config
+          fi
+          
           # Update config
           make olddefconfig
 
@@ -284,7 +291,10 @@ jobs:
           export BR2_EXTERNAL="${{ github.workspace }}/buildroot-external"
           
           # Build with parallel jobs
-          make -j$(nproc)
+          # Using make without -j flag to let Buildroot manage parallelism via BR2_JLEVEL
+          # This avoids "make[1]: warning: -j1 forced in submake: resetting jobserver mode" warnings
+          # Buildroot will use BR2_JLEVEL (set to 0 = auto-detect) for per-package parallelism
+          make
 
       - name: Prepare artifacts
         if: steps.check_build.outputs.should_build == 'true'
