@@ -30,6 +30,11 @@ on:
         required: false
         default: 'false'
         type: boolean
+      fallback_to_github:
+        description: 'Upload to GitHub artifacts if Mega upload fails'
+        required: false
+        default: 'false'
+        type: boolean
 
 env:
   BUILDROOT_VERSION: ${{ github.event.inputs.buildroot_version || '2025.11' }}
@@ -374,7 +379,7 @@ jobs:
           fi
 
       - name: Upload artifacts to GitHub (fallback)
-        if: steps.upload_mega.outcome == 'failure' || env.HAS_MEGA_CREDS == 'false'
+        if: (steps.upload_mega.outcome == 'failure' || env.HAS_MEGA_CREDS == 'false') && github.event.inputs.fallback_to_github == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ format('{0}-{1}{2}-images', env.TARGET_BOARD, matrix.build_suffix, env.BUILD_DEBUG == 'true' && '-debug-virtio' || '') }}
