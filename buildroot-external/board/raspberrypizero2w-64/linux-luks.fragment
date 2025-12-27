@@ -97,23 +97,4 @@ CONFIG_FAT_DEFAULT_IOCHARSET="iso8859-1"
 CONFIG_NLS_CODEPAGE_437=y
 CONFIG_NLS_ISO8859_1=y
 
-# =============================================================================
-# Kernel modules support (required for WiFi driver)
-# =============================================================================
-CONFIG_MODULES=y
-CONFIG_MODULE_UNLOAD=y
-
-# =============================================================================
-# WiFi support for Raspberry Pi Zero 2W
-# =============================================================================
-CONFIG_WIRELESS=y
-CONFIG_RFKILL=m
-CONFIG_RFKILL_LEDS=y
-CONFIG_CFG80211=m
-CONFIG_CFG80211_WEXT=y
-CONFIG_MAC80211=m
-CONFIG_WLAN=y
-CONFIG_WLAN_VENDOR_BROADCOM=y
-CONFIG_BRCMFMAC=m
-CONFIG_BRCMFMAC_SDIO=y
 
