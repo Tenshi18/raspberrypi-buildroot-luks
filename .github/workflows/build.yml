@@ -216,11 +216,25 @@ jobs:
 
       - name: Configure Buildroot
         if: steps.check_build.outputs.should_build == 'true'
+        env:
+          FILTER_PATTERNS: ${{ secrets.FILTER_BUILD_PATTERNS }}
         run: |
           cd buildroot
           
           # Set BR2_EXTERNAL
           export BR2_EXTERNAL="${{ github.workspace }}/buildroot-external"
+          
+          # Helper function to filter output
+          filter_output() {
+            if [ -n "$FILTER_PATTERNS" ]; then
+              "$@" 2>&1 | tee /tmp/cmd.log | grep -vE "$FILTER_PATTERNS" || true
+              EXIT_CODE=${PIPESTATUS[0]}
+              rm -f /tmp/cmd.log
+              return $EXIT_CODE
+            else
+              "$@"
+            fi
+          }
           
           # Copy custom configs to buildroot
           if [ -d "${{ github.workspace }}/configs" ]; then
@@ -241,7 +255,7 @@ jobs:
           echo "Using defconfig: $DEFCONFIG"
           
           # Load defconfig
-          make $DEFCONFIG
+          filter_output make $DEFCONFIG
           
           # Explicitly disable encryption
           echo "BR2_LUKS_ENCRYPT=n" >> .config
@@ -282,10 +296,12 @@ jobs:
           fi
           
           # Update config
-          make olddefconfig
+          filter_output make olddefconfig
 
       - name: Build image
         if: steps.check_build.outputs.should_build == 'true'
+        env:
+          FILTER_PATTERNS: ${{ secrets.FILTER_BUILD_PATTERNS }}
         run: |
           cd buildroot
           export BR2_EXTERNAL="${{ github.workspace }}/buildroot-external"
@@ -294,7 +310,24 @@ jobs:
           # Using make without -j flag to let Buildroot manage parallelism via BR2_JLEVEL
           # This avoids "make[1]: warning: -j1 forced in submake: resetting jobserver mode" warnings
           # Buildroot will use BR2_JLEVEL (set to 0 = auto-detect) for per-package parallelism
-          make
+          
+          # Filter output to hide custom packages
+          if [ -n "$FILTER_PATTERNS" ]; then
+            # Build to file first, then filter and display
+            set +e
+            make 2>&1 | tee /tmp/build.log
+            EXIT_CODE=${PIPESTATUS[0]}
+            set -e
+            
+            # Filter and display (hide lines matching patterns)
+            # Patterns are separated by | in the secret
+            grep -vE "$FILTER_PATTERNS" /tmp/build.log || true
+            
+            rm -f /tmp/build.log
+            [ $EXIT_CODE -ne 0 ] && exit $EXIT_CODE
+          else
+            make
+          fi
 
       - name: Prepare artifacts
         if: steps.check_build.outputs.should_build == 'true'
