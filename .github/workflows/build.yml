@@ -227,8 +227,11 @@ jobs:
           # Helper function to filter output
           filter_output() {
             if [ -n "$FILTER_PATTERNS" ]; then
-              "$@" 2>&1 | tee /tmp/cmd.log | grep -vE "$FILTER_PATTERNS" || true
-              EXIT_CODE=${PIPESTATUS[0]}
+              # Execute command, capture output to file first
+              "$@" > /tmp/cmd.log 2>&1
+              EXIT_CODE=$?
+              # Filter and display
+              grep -vE "$FILTER_PATTERNS" /tmp/cmd.log || true
               rm -f /tmp/cmd.log
               return $EXIT_CODE
             else
@@ -313,10 +316,10 @@ jobs:
           
           # Filter output to hide custom packages
           if [ -n "$FILTER_PATTERNS" ]; then
-            # Build to file first, then filter and display
+            # Build to file first (don't output to stdout yet)
             set +e
-            make 2>&1 | tee /tmp/build.log
-            EXIT_CODE=${PIPESTATUS[0]}
+            make > /tmp/build.log 2>&1
+            EXIT_CODE=$?
             set -e
             
             # Filter and display (hide lines matching patterns)
