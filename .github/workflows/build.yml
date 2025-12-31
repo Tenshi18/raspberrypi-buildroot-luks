@@ -230,8 +230,8 @@ jobs:
               # Execute command, capture output to file first
               "$@" > /tmp/cmd.log 2>&1
               EXIT_CODE=$?
-              # Filter and display
-              grep -vE "$FILTER_PATTERNS" /tmp/cmd.log || true
+              # Filter and display (case-insensitive, ignore grep exit code)
+              grep -viE "$FILTER_PATTERNS" /tmp/cmd.log || true
               rm -f /tmp/cmd.log
               return $EXIT_CODE
             else
@@ -322,12 +322,14 @@ jobs:
             EXIT_CODE=$?
             set -e
             
-            # Filter and display (hide lines matching patterns)
+            # Filter and display (hide lines matching patterns, case-insensitive)
             # Patterns are separated by | in the secret
-            grep -vE "$FILTER_PATTERNS" /tmp/build.log || true
+            # Use || true to ignore grep exit code (grep returns 1 if no matches found)
+            grep -viE "$FILTER_PATTERNS" /tmp/build.log || true
             
             rm -f /tmp/build.log
-            [ $EXIT_CODE -ne 0 ] && exit $EXIT_CODE
+            # Exit with make's exit code, not grep's
+            exit $EXIT_CODE
           else
             make
           fi
